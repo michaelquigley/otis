@@ -14,7 +14,7 @@ The result is the body of knowledge — the substrate otis reads against when ru
 
 ## Inputs
 
-A project codebase, typically named at the start of a harvest session. Filesystem access to the repo. Optionally: the project's `AGENTS.md` if it has one, `docs/current/` if behavior is documented, and any prior BoK entries in `otis-bok/projects/<name>/` if some have already been written.
+A project codebase, typically named at the start of a harvest session. Filesystem access to the repo. Optionally: the project's `AGENTS.md` if it has one, `docs/current/` if behavior is documented, and any prior BoK entries in the central `otis-bok` repo — general guidance at the top level and project-bound entries under `projects/<name>/`.
 
 Conversation with Michael as the editorial partner.
 
@@ -65,7 +65,7 @@ Survey, cluster, propose, discuss, commit.
 
 **Cluster.** Group observations that share a theme. Three observations about naming likely consolidate into one candidate entry on naming. A single observation about layering goes in the candidate pile but might not be ripe yet — note it and move on.
 
-**Propose.** Draft a candidate entry per the spec's format. Frontmatter (title, tags, applies_to, created), prose body explaining what the pattern is and why it matters, optional examples and related pointers. Keep entries tight; long entries are usually trying to be two entries.
+**Propose.** Draft a candidate entry per the spec's format. Frontmatter (title, tags, created), prose body explaining what the pattern is and why it matters, optional examples and related pointers. Scope is encoded by location — general guidance goes in a top-level bucket, project-bound guidance lands under `projects/<name>/`. Keep entries tight; long entries are usually trying to be two entries.
 
 **Discuss.** Bring candidates to Michael. He'll accept, refine, redirect, or reject. "This pattern isn't one I want to codify" is a valid answer. "This is real but the framing's off" is another. "This is half right; here's what's actually going on" is the most common.
 
