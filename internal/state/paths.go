@@ -66,6 +66,11 @@ func SupervisorEventsPath(root string) string {
 	return filepath.Join(SupervisorDir(root), eventsFileName)
 }
 
+// TokensDir returns the bearer-token storage directory.
+func TokensDir(root string) string {
+	return filepath.Join(StateRoot(root), "tokens")
+}
+
 // DispositionsPath returns the append-only disposition event log path.
 func DispositionsPath(root string, project string) string {
 	return filepath.Join(ProjectDir(root, project), dispositionsFileName)

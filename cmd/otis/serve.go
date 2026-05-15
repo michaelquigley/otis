@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/michaelquigley/df/dl"
+	"github.com/michaelquigley/otis/internal/api"
 	"github.com/michaelquigley/otis/internal/config"
 	"github.com/michaelquigley/otis/internal/dispatcher"
 	"github.com/michaelquigley/otis/internal/scheduler"
@@ -39,7 +41,14 @@ func newServeCommand(configPath *string) *cobra.Command {
 			if err := cleanupScratch(cmd.Context(), cfg); err != nil {
 				return err
 			}
-			s, err := scheduler.New(cfg, scheduler.Options{Store: store})
+			dispatch, err := dispatcher.New(cfg, dispatcher.Options{Store: store})
+			if err != nil {
+				return err
+			}
+			s, err := scheduler.New(cfg, scheduler.Options{
+				Store:    store,
+				Enqueuer: dispatch,
+			})
 			if err != nil {
 				return err
 			}
@@ -55,7 +64,7 @@ func newServeCommand(configPath *string) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "enqueued: %d\n", len(handles))
 				return nil
 			}
-			return s.Run(cmd.Context())
+			return runSupervisor(cmd.Context(), cfg, api.NewServer(cfg, store, dispatch).Handler(), s)
 		},
 	}
 	cmd.Flags().BoolVar(&once, "once", false, "run one scheduler tick and exit")
@@ -75,4 +84,33 @@ func cleanupScratch(ctx context.Context, cfg *config.ResolvedConfig) error {
 		return err
 	}
 	return nil
+}
+
+func runSupervisor(ctx context.Context, cfg *config.ResolvedConfig, handler http.Handler, s *scheduler.Scheduler) error {
+	server := &http.Server{
+		Addr:    cfg.Global.API.Listen,
+		Handler: handler,
+	}
+	errs := make(chan error, 2)
+	go func() {
+		dl.Infof("api listening on https://%s", cfg.Global.API.Listen)
+		err := server.ListenAndServeTLS(cfg.Global.API.TLS.Cert, cfg.Global.API.TLS.Key)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+			return
+		}
+		errs <- nil
+	}()
+	go func() {
+		errs <- s.Run(ctx)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = server.Shutdown(context.Background())
+		return nil
+	case err := <-errs:
+		_ = server.Shutdown(context.Background())
+		return err
+	}
 }
