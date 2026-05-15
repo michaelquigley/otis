@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -150,7 +151,7 @@ func (s *Server) handleRunPass(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.project(w, projectName); !ok {
 		return
 	}
-	handle, err := s.dispatcher.Enqueue(r.Context(), dispatcher.EnqueueRequest{
+	handle, err := s.dispatcher.Enqueue(context.WithoutCancel(r.Context()), dispatcher.EnqueueRequest{
 		ProjectName: projectName,
 		PassName:    passName,
 		Source:      dispatcher.SourceForce,

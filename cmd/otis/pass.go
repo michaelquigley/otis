@@ -2,67 +2,51 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 
-	"github.com/michaelquigley/otis/internal/config"
-	"github.com/michaelquigley/otis/internal/dispatcher"
 	"github.com/spf13/cobra"
 )
 
-func newPassCommand(configPath *string) *cobra.Command {
+func newPassCommand(clientConfigPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pass",
 		Short: "run and inspect passes",
 	}
-	cmd.AddCommand(newPassRunCommand(configPath))
+	cmd.AddCommand(newPassRunCommand(clientConfigPath))
 	return cmd
 }
 
-func newPassRunCommand(configPath *string) *cobra.Command {
-	var reviewerOverride string
-	var dummyOutputPath string
+func newPassRunCommand(clientConfigPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <project>/<pass>",
-		Short: "force-run a pass",
+		Short: "force-run a pass through the supervisor",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectName, passName, err := dispatcher.SplitProjectPass(args[0])
+			projectName, passName, err := splitProjectPass(args[0])
 			if err != nil {
 				return err
 			}
-			cfg, err := config.Load(*configPath)
+			supervisor, err := newSupervisorClient(*clientConfigPath)
 			if err != nil {
 				return err
 			}
-			dispatch, err := dispatcher.New(cfg, dispatcher.Options{})
-			if err != nil {
+			response := runResponse{}
+			if err := supervisor.DoJSON(cmd.Context(), http.MethodPost, apiPath("projects", projectName, "passes", passName, "run"), nil, &response); err != nil {
 				return err
 			}
-			handle, err := dispatch.Enqueue(cmd.Context(), dispatcher.EnqueueRequest{
-				ProjectName:      projectName,
-				PassName:         passName,
-				Source:           dispatcher.SourceForce,
-				ReviewerOverride: reviewerOverride,
-				DummyOutputPath:  dummyOutputPath,
-			})
-			if err != nil {
-				return err
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "state: %s\n", response.State)
+			if response.Project != "" {
+				fmt.Fprintf(out, "project: %s\n", response.Project)
 			}
-			dispatched, err := handle.Wait(cmd.Context())
-			if err != nil {
-				return err
+			if response.Pass != "" {
+				fmt.Fprintf(out, "pass: %s\n", response.Pass)
 			}
-			result := dispatched.RunResult
-			fmt.Fprintf(cmd.OutOrStdout(), "run: %s\n", result.RunID)
-			fmt.Fprintf(cmd.OutOrStdout(), "report: %s\n", result.RunDir)
-			if result.Noop {
-				fmt.Fprintln(cmd.OutOrStdout(), "result: no commits in window")
-				return nil
+			if response.RunID != "" {
+				fmt.Fprintf(out, "run: %s\n", response.RunID)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "findings: %d\n", len(result.Findings))
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&reviewerOverride, "reviewer", "", "override reviewer kind for this run")
-	cmd.Flags().StringVar(&dummyOutputPath, "dummy-output", "", "path to canned dummy reviewer JSON output")
 	return cmd
 }

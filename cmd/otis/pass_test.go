@@ -86,12 +86,25 @@ Prefer lens for perspectival surfaces.
 		t.Fatalf("write dummy output: %v", err)
 	}
 
-	globalPath := filepath.Join(dir, "global.yaml")
-	out := runCommand(t, "--config", globalPath, "pass", "run", "testproj/vocabulary-sweep", "--reviewer", "dummy", "--dummy-output", dummyOutputPath)
-	if !strings.Contains(out, "findings: 2") {
-		t.Fatalf("run output = %s", out)
+	cfg, err := config.Load(filepath.Join(dir, "global.yaml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
 	}
-	runID := lineValue(t, out, "run:")
+	result, err := dispatcher.Run(context.Background(), dispatcher.RunRequest{
+		Config:           cfg,
+		Store:            store,
+		ProjectName:      "testproj",
+		PassName:         "vocabulary-sweep",
+		ReviewerOverride: "dummy",
+		DummyOutputPath:  dummyOutputPath,
+	})
+	if err != nil {
+		t.Fatalf("run pass: %v", err)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2", len(result.Findings))
+	}
+	runID := result.RunID
 	parsedRunID, err := state.ParseRunID(runID)
 	if err != nil {
 		t.Fatalf("parse run id: %v", err)
@@ -281,18 +294,6 @@ func gitPass(t *testing.T, repo string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, string(out))
 	}
-}
-
-func lineValue(t *testing.T, output string, prefix string) string {
-	t.Helper()
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	t.Fatalf("missing line prefix %q in:\n%s", prefix, output)
-	return ""
 }
 
 func readString(t *testing.T, path string) string {

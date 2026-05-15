@@ -1,101 +1,107 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 
-	"github.com/michaelquigley/otis/internal/config"
+	"github.com/michaelquigley/otis/internal/client"
 	"github.com/michaelquigley/otis/internal/state"
 	"github.com/spf13/cobra"
 )
 
-func newFindingsCommand(configPath *string) *cobra.Command {
+func newFindingsCommand(clientConfigPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "findings",
-		Short: "inspect local finding state",
+		Short: "inspect findings through the supervisor API",
 	}
-	cmd.AddCommand(newFindingsListCommand(configPath))
-	cmd.AddCommand(newFindingsShowCommand(configPath))
+	cmd.AddCommand(newFindingsListCommand(clientConfigPath))
+	cmd.AddCommand(newFindingsShowCommand(clientConfigPath))
 	return cmd
 }
 
-func newFindingsListCommand(configPath *string) *cobra.Command {
+func newFindingsListCommand(clientConfigPath *string) *cobra.Command {
 	var projectName string
 	var passName string
 	var openOnly bool
+	var disposition string
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "list findings from the local state directory",
+		Short: "list findings from the supervisor",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			supervisor, err := newSupervisorClient(*clientConfigPath)
+			if err != nil {
+				return err
+			}
+			projects := []string{projectName}
 			if projectName == "" {
-				return fmt.Errorf("--project is required")
-			}
-			project, err := localStateProject(*configPath, projectName)
-			if err != nil {
-				return err
-			}
-			findings, err := project.ListFindings(state.FindingFilter{
-				Pass:     passName,
-				OpenOnly: openOnly,
-			})
-			if err != nil {
-				return err
+				response := projectsResponse{}
+				if err := supervisor.DoJSON(cmd.Context(), http.MethodGet, apiPath("projects"), nil, &response); err != nil {
+					return err
+				}
+				projects = projects[:0]
+				for _, project := range response.Projects {
+					projects = append(projects, project.Name)
+				}
 			}
 			out := cmd.OutOrStdout()
-			if len(findings) == 0 {
-				fmt.Fprintln(out, "no findings")
-				return nil
+			total := 0
+			for _, project := range projects {
+				findings, err := remoteFindings(cmd.Context(), supervisor, project, passName, disposition, openOnly)
+				if err != nil {
+					return err
+				}
+				for _, finding := range findings {
+					total++
+					fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", finding.ID, finding.Severity, finding.Disposition, finding.Title)
+				}
 			}
-			for _, finding := range findings {
-				fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", finding.ID, finding.Severity, finding.Disposition, finding.Title)
+			if total == 0 {
+				fmt.Fprintln(out, "no findings")
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&projectName, "project", "", "project name")
 	cmd.Flags().StringVar(&passName, "pass", "", "pass name")
+	cmd.Flags().StringVar(&disposition, "disposition", "", "finding disposition")
 	cmd.Flags().BoolVar(&openOnly, "open", false, "only show open findings")
 	return cmd
 }
 
-func newFindingsShowCommand(configPath *string) *cobra.Command {
+func newFindingsShowCommand(clientConfigPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <finding-id>",
-		Short: "show one finding from the local state directory",
+		Short: "show one finding from the supervisor",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := state.ParseID(args[0])
 			if err != nil {
 				return err
 			}
-			project, err := localStateProject(*configPath, id.Project)
+			supervisor, err := newSupervisorClient(*clientConfigPath)
 			if err != nil {
 				return err
 			}
-			finding, err := project.GetFinding(id.String())
-			if err != nil {
+			finding := state.Finding{}
+			if err := supervisor.DoJSON(cmd.Context(), http.MethodGet, findingAPIPath(id), nil, &finding); err != nil {
 				return err
 			}
-			printFinding(cmd, finding)
+			printFinding(cmd, &finding)
 			return nil
 		},
 	}
 }
 
-func localStateProject(configPath string, projectName string) (*state.Project, error) {
-	cfg, err := config.Load(configPath)
-	if err != nil {
+func remoteFindings(ctx context.Context, supervisor *client.Client, projectName string, passName string, disposition string, openOnly bool) ([]*state.Finding, error) {
+	response := findingsResponse{}
+	if err := supervisor.DoJSON(ctx, http.MethodGet, findingsPath(projectName, passName, disposition, openOnly), nil, &response); err != nil {
 		return nil, err
 	}
-	if _, ok := cfg.Projects[projectName]; !ok {
-		return nil, fmt.Errorf("project %q is not configured", projectName)
-	}
-	store, err := state.NewStore(cfg.Global.Storage.StateDir)
-	if err != nil {
-		return nil, err
-	}
-	return store.Project(projectName), nil
+	return response.Findings, nil
 }
 
 func printFinding(cmd *cobra.Command, finding *state.Finding) {
@@ -118,4 +124,22 @@ func printFinding(cmd *cobra.Command, finding *state.Finding) {
 	if strings.TrimSpace(finding.SuggestedFix) != "" {
 		fmt.Fprintf(out, "\nsuggested fix:\n%s\n", strings.TrimSpace(finding.SuggestedFix))
 	}
+}
+
+func findingsPath(projectName string, passName string, disposition string, openOnly bool) string {
+	path := apiPath("projects", projectName) + "/findings"
+	query := url.Values{}
+	if passName != "" {
+		query.Set("pass", passName)
+	}
+	if disposition != "" {
+		query.Set("disposition", disposition)
+	}
+	if openOnly {
+		query.Set("open", "true")
+	}
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return path
 }

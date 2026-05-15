@@ -10,7 +10,9 @@ import (
 	"syscall"
 
 	"github.com/michaelquigley/df/dl"
+	clientcfg "github.com/michaelquigley/otis/internal/client"
 	"github.com/michaelquigley/otis/internal/config"
+	"github.com/michaelquigley/otis/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +32,7 @@ func main() {
 
 func newRootCommand() *cobra.Command {
 	var configPath string
+	var clientConfigPath string
 	var verbose bool
 
 	root := &cobra.Command{
@@ -42,15 +45,22 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", config.DefaultConfigPath, "path to otis global config")
+	root.PersistentFlags().StringVar(&clientConfigPath, "client-config", clientcfg.DefaultConfigPath, "path to otis client config")
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose stderr logging")
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newServeCommand(&configPath))
 	root.AddCommand(newConfigCommand())
-	root.AddCommand(newFindingsCommand(&configPath))
+	root.AddCommand(newFindingsCommand(&clientConfigPath))
 	root.AddCommand(newBokCommand())
-	root.AddCommand(newPassCommand(&configPath))
+	root.AddCommand(newPassCommand(&clientConfigPath))
 	root.AddCommand(newAdminCommand(&configPath))
-	root.AddCommand(newMCPCommand())
+	root.AddCommand(newMCPCommand(&clientConfigPath))
+	root.AddCommand(newProjectsCommand(&clientConfigPath))
+	root.AddCommand(newPassesCommand(&clientConfigPath))
+	root.AddCommand(newReportCommand(&clientConfigPath))
+	root.AddCommand(newDispositionCommand("accept", "mark a finding accepted", state.DispositionAccepted, &clientConfigPath))
+	root.AddCommand(newDispositionCommand("defer", "mark a finding deferred", state.DispositionDeferred, &clientConfigPath))
+	root.AddCommand(newDispositionCommand("reject", "mark a finding rejected", state.DispositionRejected, &clientConfigPath))
 	return root
 }
 
