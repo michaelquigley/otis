@@ -10,3 +10,4 @@
 CODEX-*.md
 node_modules
 ui/flo/dist
+mercurius.yaml

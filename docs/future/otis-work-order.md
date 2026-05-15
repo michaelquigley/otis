@@ -14,7 +14,7 @@ Three calibration calls were made with Michael before drafting:
 
 - **Reviewer scope.** Codex adapter first (mirroring mercurius's proven `codex exec` dispatch); claude-code + pi adapters as a discrete later phase. Pi is the least-validated harness and gets the most learning value from being added once the rest of the pipeline is real.
 - **MCP SDK.** `github.com/modelcontextprotocol/go-sdk` (matches mercurius). Lore's `mark3labs/mcp-go` is not adopted — the practice prefers one MCP SDK going forward.
-- **Embedding backend.** Ollama only (mirrors lore exactly — `nomic-embed-text` default, SQLite + WAL + FTS5, chunk-based with cosine + BM25 hybrid). The spec's "deliberately duplicated" language is honored: no early extraction to a shared library. That's a deferred concern in the spec; this work order respects the deferral.
+- **BoK reading model.** Filesystem walk, no index. The minimal harness reads the BoK directly from the sexton-synced tree at pass time. Embedding-backed semantic search is deferred (see the spec's Deferred section); `include` lists support directory subtrees and explicit file paths only. Bare-term entries are reserved syntax and rejected by the loader today.
 
 ## Toolchain & Idiom Anchors
 
@@ -24,7 +24,6 @@ Three calibration calls were made with Michael before drafting:
 | Config binding | `github.com/michaelquigley/df/dd` with `dd:"name,+required,+secret"` tags | lore `internal/config/load.go`, mercurius `internal/config/config.go:25–75` |
 | CLI | `github.com/spf13/cobra`, single binary, subcommands for `serve` and client commands | mercurius `cmd/mercurius/main.go:37–101` |
 | MCP server | `github.com/modelcontextprotocol/go-sdk` | mercurius `internal/mcpserver/mcpServer.go:275+` |
-| Embedding index | SQLite + WAL + FTS5 + Ollama, chunked storage as float32 BLOB | lore `internal/index/index.go:18–87`, `internal/index/vector.go`, `internal/index/schema.sql` |
 | Frontmatter parsing | `dd` YAML unmarshal (with `+extra` capture for unmapped keys) | lore `internal/markdown/frontmatter.go` |
 | Reviewer dispatch | `exec.CommandContext` with prompt-via-stdin, schema-via-file, output-via-file | mercurius `internal/reviewer/codex/codexReviewer.go:41–107` |
 | State persistence | atomic temp-file-rename writes; append-only `.jsonl` event logs; immutable round logs | mercurius `internal/monitor/monitor.go:69`, `internal/roundlog/roundLog.go:48` |
@@ -129,23 +128,24 @@ otis/
   internal/
     config/
       global.go            # global config struct + DefaultGlobalConfig() + Validate() + Resolve()
-      project.go           # per-project otis.yaml — same shape (Default/Validate/Resolve)
-      load.go              # LoadGlobal / LoadProject; returns ResolvedConfig{Global, Projects}
+      profile.go           # shared pass profile (.yaml at BoK root) struct + LoadProfile
+      project.go           # per-project config (include_configs, disable, passes) + Validate + Resolve
+      compose.go           # one-level composition: profiles + disable + project add/override → ResolvedProject
+      load.go              # Load(globalPath) → ResolvedConfig{Global, Projects map[string]*ResolvedProject}
     state/
       paths.go             # state-dir layout helpers
       store.go             # per-project sync.RWMutex registry; entry point for all mutating ops
-      findings.go          # Finding struct + JSON file IO; writes take project write lock
-      dispositions.go      # append-only events.jsonl; current-state reduction; writes under project lock
+      findings.go          # Finding struct + JSON file IO; canonical-ID validators; writes take project write lock
+      dispositions.go      # append-only dispositions.jsonl; current-state + note-history reduction; writes under project lock
       backlog.go           # backlog.md renderer; called under project write lock after each event
-      runs.go              # runs/<date>/<pass>/<HHMMSSZ-NNN>/ artifact writers; allocates the time+seq under project lock; writes frozen findings.json + report.md at completion
+      runs.go              # runs/<date>/<pass>/<HHMMSSZ-NNN>/ artifact writers; allocates the time+seq; writes frozen findings.json + report.md
+      lastrun.go           # per-project last-run.json (dispatch-start timestamps); under project lock
+      events.go            # supervisor/events.jsonl lifecycle event append (single-writer, no lock needed)
+      scratch.go           # state_dir/scratch/<run_id>/ worktree directory helpers + orphan cleanup at startup
     bok/
-      index.go             # SQLite-backed index (port lore's pattern)
-      vector.go            # chunk embedding storage + cosine queries
-      search.go            # hybrid FTS5 + vector ranking
-      chunk.go             # markdown chunking
-      frontmatter.go       # dd-based frontmatter parsing
-      ollama.go            # embedder client
-      schema.sql           # embedded; mirror lore's schema
+      entry.go             # Entry struct + ReadEntry(bokPath, relpath) — single-entry read from disk (.md appended at I/O)
+      resolve.go           # filesystem walker; directory + file-path forms of `include`; project-location filter; root-file skip; bare-term rejection
+      frontmatter.go       # dd-based YAML frontmatter parsing (title, tags, created)
     reviewer/
       reviewer.go          # Reviewer interface + Request/Result types
       dummy/dummy.go       # deterministic test reviewer (mirrors mercurius)
@@ -153,14 +153,17 @@ otis/
       claudecode/cc.go     # `claude -p ...` adapter (phase 9)
       pi/pi.go             # `pi -p ...` adapter (phase 9)
     prompt/
-      prompt.go            # assemble role+goal, BoK slice, project context, scope, open backlog, schema+budget
-      schema.go            # finding JSON schema (with top_findings as maxItems)
+      prompt.go            # assemble role+goal, BoK slice, project context, scope content, prior findings context, schema+budget
+      scope_content.go     # manifest + bounded inline (recent diffs, paths/full body inlining with byte caps)
+      schema.go            # reviewer output JSON schema (lean shape; top_findings as maxItems)
     scheduler/
-      scheduler.go         # cadence + windows + concurrency caps
-      windows.go           # window membership checks
+      scheduler.go         # tick loop: BoK incremental sync, then due-list construction
+      windows.go           # window membership (HH:MM, cross-midnight, 24:00 sentinel)
     dispatcher/
-      dispatcher.go        # per-reviewer + global semaphores; fire-and-forget jobs
-      run.go               # one pass execution end-to-end
+      dispatcher.go        # per-reviewer + global semaphores; inFlight map; defer-released
+      run.go               # one pass execution end-to-end (worktree create/remove, normalize, persist, frozen artifacts)
+      scope.go             # resolves scope.project (full / paths / recent) into a concrete file set, run against the worktree
+      worktree.go          # git worktree add/remove wrappers; capturedSHA helper
     notify/
       notify.go            # interface
       mattermost/mm.go     # mattermost poster (phase 9)
@@ -168,8 +171,12 @@ otis/
       router.go            # stdlib mux; the seven endpoints
       auth.go              # bearer-token file store
       handlers.go
+      render.go            # report.md rendering at run-completion (called from dispatcher, not API)
+    client/
+      config.go            # ~/.config/otis/config.yaml loader (supervisor URL + bearer token)
+      http.go              # authed HTTP client shared by CLI subcommands and MCP bridge
     mcp/
-      bridge.go            # `otis mcp` stdio↔HTTPS bridge; reuses workstation client + bearer token
+      bridge.go            # `otis mcp` stdio↔HTTPS bridge; reuses internal/client/{config,http}
       tools.go             # MCP tool handlers that forward to the supervisor over HTTPS (no direct state writes)
   docs/
     future/
@@ -200,9 +207,11 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 - `cmd/otis/main.go` with cobra root, `df/dl` init (output stderr, trim prefix `github.com/michaelquigley/otis/`), `signal.NotifyContext` wired into `ExecuteContext`.
 - `otis serve` subcommand stub — loads global config, logs "supervisor would start here," exits.
 - `otis version`, `otis config check <path>` subcommands.
-- `internal/config/global.go` — global config struct with `dd` tags. Fields per spec: `bok.path`, `bok.embedding.endpoint` (default `http://localhost:11434`), `bok.embedding.model` (default `nomic-embed-text`), `bok.search.default_top_k` (default 8), `storage.state_dir`, `prompt.per_file_bytes` (default 8192), `prompt.total_scope_bytes` (default 262144), `api.listen` (e.g. `0.0.0.0:8443`), `api.tls.cert`, `api.tls.key`, `notification.{mattermost.{url, token_env}, report_base_url}`, `reviewers.<name>.{binary, default_model, concurrency_cap, window}`, `windows.<name>.hours`, `global_concurrency_cap`, `projects[].path`. Defaults via a `DefaultGlobalConfig()` constructor (struct-field init — practice convention, see Practice Idioms). Resolver expands `~` / env / relative paths.
-- `internal/config/project.go` — project config struct with `dd` tags. Fields per spec section 7.1. Same `DefaultProjectConfig()` + `Validate()` + `Resolve(baseDir)` shape. `Validate()` enforces that every pass with `scope.project.type: recent` carries a non-zero `scope.project.window` (missing or zero is a hard load error; no cadence fallback), rejects duplicate pass names within the project, and reuses `state.ValidateIDComponent` (the same validator the canonical finding ID uses: non-empty, no `/`, no `--`, no leading/trailing `-`) against `project.name` and each `pass.name` so invalid slugs fail at `otis config check` rather than at first ID allocation.
-- `internal/config/load.go` — `LoadGlobal(path)` and `LoadProject(path)` wrappers that orchestrate defaults → `dd.MergeYAMLFile` → `Validate` → `Resolve`. A `Load(globalPath)` top-level call returns a `ResolvedConfig{Global, Projects map[string]*ProjectConfig}` (lore's two-part shape) and rejects duplicate `project.name` values across loaded projects as a hard error.
+- `internal/config/global.go` — global config struct with `dd` tags. Fields per spec: `bok.path` (filesystem path to the sexton-synced BoK repo — read directly, no index), `storage.state_dir`, `prompt.per_file_bytes` (default 8192), `prompt.total_scope_bytes` (default 262144), `api.listen` (e.g. `0.0.0.0:8443`), `api.tls.cert`, `api.tls.key`, `notification.{mattermost.{url, token_env}, report_base_url}`, `reviewers.<name>.{binary, default_model, concurrency_cap, window}`, `windows.<name>.hours`, `global_concurrency_cap`, `projects[].{name, path, config}`. The `config` field is optional and defaults to `<bok.path>/projects/<name>/otis.yaml` when omitted (convention-over-config). Defaults via a `DefaultGlobalConfig()` constructor (struct-field init — practice convention, see Practice Idioms). Resolver expands `~` / env / relative paths.
+- `internal/config/profile.go` — shared pass profile struct (the shape of a `<bok.path>/<name>.yaml` file). Carries `passes[]` only; no `include_configs`, `disable`, or `project` block. `LoadProfile(path)` returns the parsed profile or a hard error citing the file path and offending line.
+- `internal/config/project.go` — per-project config struct with `dd` tags. Fields: `include_configs []string`, `project: { name, description, notify, top_findings, ... }`, `disable []string`, `passes []Pass`. Same `Default*` + `Validate()` + `Resolve(baseDir)` shape. `Validate()` enforces that every pass with `scope.project.type: recent` carries a non-zero `scope.project.window` (missing or zero is a hard load error; no cadence fallback), rejects duplicate pass names within the project's own `passes` list, and reuses `state.ValidateIDComponent` (the same validator the canonical finding ID uses: lowercase kebab grammar `^[a-z0-9]+(?:-[a-z0-9]+)*$`) against `project.name` and each `pass.name`. Also validates each pass's `scope.bok.include` list: non-empty (a BoK-using pass must declare something) and **every entry must contain `/`** (bare terms are reserved for the future semantic-search extension and rejected today; a clear error message points the operator at the deferred capability). Form classification (directory vs file path) happens in `internal/bok/resolve.go`. The "no root-level BoK entries" rule lives in the BoK walker (`internal/bok/resolve.go`) which skips any `.md` directly at the corpus root.
+- `internal/config/compose.go` — runs the spec's composition resolution for a single project. Input: the project's parsed config + a profile loader (closure over `<bok.path>`). Output: a `ResolvedProject` carrying the composed pass list and project-level fields. Algorithm exactly mirrors the spec's "Composition Resolution" steps: load each `include_configs` entry, union their pass lists keyed by name (cross-profile name collision → hard error citing both profiles), drop names listed in `disable`, walk the project's own `passes` list with add-or-field-merge semantics (`dd.Merge` for field-merge), final cross-check for duplicate names in the result. Errors carry the file+line that introduced the problem so `otis config check` can point at it.
+- `internal/config/load.go` — `LoadGlobal(path)` and `LoadProject(path, profileLoader)` wrappers that orchestrate defaults → `dd.MergeYAMLFile` → `Validate` → `Resolve` → (for project) `Compose`. A `Load(globalPath)` top-level call returns a `ResolvedConfig{Global, Projects map[string]*ResolvedProject}` where each ResolvedProject is the post-composition result. Rejects duplicate `projects[].name` values in the global config as a hard error.
 - `AGENTS.md` at repo root pointing at spec + work order, naming the toolchain idioms.
 - `README.md` skeleton.
 
@@ -227,22 +236,17 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ---
 
-### Phase 3 — BoK ingest & embedding index
+### Phase 3 — BoK on-disk reader
 
-**Goal.** Markdown corpus → SQLite-backed embedding index → semantic search resolving a list of concerns to top-K entries.
+**Goal.** Read the BoK directly from the sexton-synced filesystem tree at pass time. Resolve a pass's `include` list (directory subtrees + explicit file paths) into a deduplicated, project-filtered slice ready for prompt assembly. No index, no embedding backend.
 
 **Lands.**
-- `internal/bok/schema.sql` — embedded; mirror lore's schema. Tables: `notes`, `note_chunks` (with `embedding BLOB`, `model`, `dimensions`), `notes_fts` virtual table.
-- `internal/bok/index.go` — open/close, WAL pragma, migrations. Exposes `IncrementalSync(ctx)` — checksum-compare against the on-disk BoK tree, re-embed only changed/new entries (mirror lore `sync.go`). Cheap when nothing changed.
-- `internal/bok/chunk.go` — paragraph→newline→space chunking, configurable max + overlap.
-- `internal/bok/frontmatter.go` — `dd`-based YAML frontmatter parsing; extract `title`, `tags`, `created`. No `applies_to` field — scope is encoded by location (see `scope.go` below).
-- `internal/bok/ollama.go` — Ollama embedding client. Endpoint and model from global config (`bok.embedding.*` block; defaults `http://localhost:11434` and `nomic-embed-text`).
-- `internal/bok/vector.go` — store + query embeddings; cosine similarity; group best chunk per note.
-- `internal/bok/search.go` — hybrid FTS5 + vector with sigmoid-normalized BM25 and cosine, weighted (configurable, default 0.5/0.5). The combined-concern query joins the pass's `concerns` list into a single search vector; `top_k` is applied to the combined result, not per-concern. K resolution order: pass-level `scope.bok.top_k` if set, else global `bok.search.default_top_k` (default 8).
-- `internal/bok/scope.go` — central-only corpus, single source. Each note in the DB carries a `relpath` column (its path within the BoK repo). **Scope filter applied at search-time**: for project `P`, allowed entries are those whose `relpath` is not under `projects/` (general guidance) or is under exactly `projects/P/`. Entries under `projects/X/` for any `X ≠ P` are excluded. Implemented as a SQL `WHERE` clause on the search join — no extra Go-side pass over results. No merge step; in-project BoK augmentation is deferred per the spec's Deferred section.
-- `otis bok index` and `otis bok search "<query>"` subcommands.
+- `internal/bok/frontmatter.go` — `dd`-based YAML frontmatter parsing; extract `title`, `tags`, `created`. No `applies_to` field — scope is encoded by location.
+- `internal/bok/entry.go` — `Entry` struct (`Relpath string` (extensionless, e.g., `vocabulary/lens-vs-view`), `Title string`, `Tags []string`, `Body string`). `ReadEntry(bokPath, relpath string) (*Entry, error)` reads one entry from disk, appending `.md` at I/O time. The struct is what the prompt assembler embeds.
+- `internal/bok/resolve.go` — filesystem walker. Given `(bokPath, include []string, projectName string)`: for each entry in `include`, classify by form — trailing `/` → directory walk under `filepath.Join(bokPath, entry)`, collecting every `.md` not at the corpus root; otherwise → literal file path, read directly. Apply the project-location filter in Go (skip results whose relpath starts with `projects/X/` for `X ≠ projectName`). Deduplicate by relpath. **Reject any `include` entry with no `/`** — those are reserved for the future semantic-search extension; current loader errors with `bare-term entries are reserved for a future capability; use a directory ('vocabulary/') or file path ('vocabulary/lens-vs-view') instead`. Missing file-path entries are hard errors with the pass-config location in the message. The walker also enforces the "no root-level entries" rule: it skips any `.md` directly at the BoK root.
+- `otis bok list` (dump every BoK entry's relpath grouped by subtree, useful for hand-verifying what's available) and `otis bok resolve --include <list> --project <name>` (preview the slice a pass would see) subcommands.
 
-**Verify.** Spin up local Ollama with `nomic-embed-text`. Ship a tiny example BoK under `docs/example/bok/` (a couple of vocabulary entries plus a layering entry). `otis bok index --config docs/example/global.yaml` rebuilds the DB. **`otis bok search "vocabulary" --concerns vocabulary,naming` returns the right entries in order**. Confirm incremental sync skips unchanged files via checksum (mirror lore `sync.go`).
+**Verify.** Ship a tiny example BoK under `docs/example/bok/` (a couple of vocabulary entries plus a layering entry). **`otis bok list --bok-path docs/example/bok/` enumerates the entries; `otis bok resolve --bok-path docs/example/bok/ --include vocabulary/,naming/lens-vs-view --project baab` returns the unioned slice with the project-location filter applied; supplying a bare-term entry (`--include vocabulary,naming`) errors clearly with the deferred-capability message**.
 
 ---
 
@@ -255,14 +259,14 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 - `internal/reviewer/dummy/dummy.go` — deterministic reviewer used by tests; reads canned output from disk; mirrors mercurius's dummy.
 - `internal/reviewer/codex/codex.go` — port mercurius's pattern from `internal/reviewer/codex/codexReviewer.go`. Flags: `codex exec -C <project_dir> --ephemeral --skip-git-repo-check --sandbox read-only --output-schema <schema.json> --output-last-message <last.txt> [-m <model>] [extra_args]`. Prompt via stdin. Ephemeral codex home (mirror `prepareCodexHome()`).
 - `internal/prompt/schema.go` — **reviewer output JSON schema** only (per spec section "Reviewer Output Schema"): the lean shape — optional `id`, required `severity`, `title`, `location`, `bok_refs`, `description`, `suggested_fix`. `top_findings` enforced via `maxItems` on the findings array (mirror mercurius's `schema.ReviewOutputSchemaWithMaxFindings`). Validated via `santhosh-tekuri/jsonschema/v6`. The persisted Finding shape lives in `internal/state/findings.go` (Go struct, not a JSON schema) — the dispatcher's normalize step constructs it from the validated reviewer output plus dispatcher-owned fields.
-- `internal/prompt/prompt.go` — assemble role+goal, BoK slice (the scoped top-K from `internal/bok/`), project context (non-BoK metadata only: project name, description, primary language from `otis.yaml`; no BoK content sneaks in through this section), **scope content (manifest + bounded inline)** built by `prompt/scope_content.go`, **prior findings context** (every non-archived finding for the same project+pass with description, location, disposition, and human note — `open`, `accepted`, `deferred`, `rejected` all included; explicit per-disposition handling rules in the prompt copy), output schema + budget. Mirror mercurius's modular layout from `internal/prompt/prompt.go:29–107`.
-- `internal/prompt/scope_content.go` — turns a resolved file list (from `dispatcher/scope.go`) plus the scope type into the manifest-plus-inline payload defined in the spec. Always emits the manifest (relative paths) and the project's `git rev-parse HEAD`. Inline rules: for `recent`, resolve the diff boundary precisely — `git -C <project> log --first-parent --since=<window-start> --pretty=%H HEAD` (newest first); the *last* line is `C_oldest`; if the output is empty, recent scope is empty (no manifest entries, no diff content). Otherwise, if `C_oldest` has a parent, per in-scope file emit `git -C <project> diff <C_oldest>^1..HEAD -- <file>`; if `C_oldest` is the root commit (no parent), diff against the empty-tree SHA `4b825dc642cb6eb9a060e54bf8d69288fbee4904`. `--first-parent` is mandatory — without it, merges from side branches can pull commits outside the current branch's window into the boundary. For `paths` and `full`, embed file content up to `prompt.per_file_bytes` per file and `prompt.total_scope_bytes` overall, marking truncations and remaining files as manifest-only with a `truncated: N→K bytes` annotation. Both byte caps come from the global config (`internal/config/global.go`); defaults 8 KiB / 256 KiB.
-- `internal/dispatcher/run.go` — one pass execution: assign a run ID (`<project>/<pass>/<YYYY-MM-DD>/<HHMMSSZ>-<NNN>`; the dispatcher claims the `NNN` sequence inside the per-project critical section), resolve scope, retrieve BoK slice, assemble prompt, invoke reviewer, validate output against the **reviewer output schema** (lean shape), **normalize** each reviewer-output entry using the two-branch rule from the spec:
+- `internal/prompt/prompt.go` — assemble role+goal, BoK slice (the resolved `include` list via `internal/bok/resolve.go` — directory + file-path entries read fresh from disk, deduplicated, project-filtered), project context (non-BoK metadata only: project name, description, primary language from the resolved project config; no BoK content sneaks in through this section), **scope content (manifest + bounded inline)** built by `prompt/scope_content.go`, **prior findings context** (every non-archived finding for the same project+pass with description, location, disposition, and human note — `open`, `accepted`, `deferred`, `rejected` all included; explicit per-disposition handling rules in the prompt copy), output schema + budget. Mirror mercurius's modular layout from `internal/prompt/prompt.go:29–107`.
+- `internal/prompt/scope_content.go` — turns the scope resolver's output (from `dispatcher/scope.go`) into the manifest-plus-inline payload defined in the spec. Always emits the manifest (relative paths) and the project's `git rev-parse HEAD`. Inline rules: for `recent`, the resolver supplies `{files, baseSHA}` (computed via `--first-parent`, see scope.go); per file emit `git -C <project> diff <baseSHA>..HEAD -- <file>`. This module never re-derives the base SHA — it consumes the one the resolver already chose, so manifest and diff are guaranteed to come from the same commit set. For `paths` and `full`, embed file content up to `prompt.per_file_bytes` per file and `prompt.total_scope_bytes` overall, marking truncations and remaining files as manifest-only with a `truncated: N→K bytes` annotation. Both byte caps come from the global config (`internal/config/global.go`); defaults 8 KiB / 256 KiB.
+- `internal/dispatcher/run.go` — one pass execution. **Worktree setup at run start**: capture the project's HEAD (`git -C <project.path> rev-parse HEAD` → `capturedSHA`), assign the run ID (`<project>/<pass>/<YYYY-MM-DD>/<HHMMSSZ>-<NNN>`; the dispatcher claims the `NNN` sequence inside the per-project critical section), then `git -C <project.path> worktree add <state_dir>/scratch/<run_id>/ <capturedSHA>`. The worktree path becomes the working directory for every subsequent operation in this run (scope resolution, file content reads for prompt inlining, the reviewer subprocess's `-C` argument). A `defer` in the goroutine wrapper runs `git -C <project.path> worktree remove <state_dir>/scratch/<run_id>/` regardless of how the run exits. Resolve scope using the worktree path. **Empty-recent short-circuit**: if `scope.project.type == recent` and the resolver returned zero files (empty first-parent selection), skip BoK retrieval, prompt assembly, reviewer invocation, and normalization entirely. Write a minimal run directory: `prompt.md` is a one-line header noting "no commits in window," `output.json` is `{}`, `findings.json` is `[]`, `git-head.txt` carries `capturedSHA`, `report.md` is rendered as a no-op report ("no commits landed on first-parent line in the window"). No `finding_*` events appended. No mattermost message posted. `last-run.json` is already written at dispatch start so cadence advances. Worktree is still removed via the defer. Then return. Otherwise proceed normally: retrieve BoK slice, assemble prompt (with the worktree path as the reviewer's working directory), invoke reviewer, validate output against the **reviewer output schema** (lean shape), **normalize** each reviewer-output entry using the two-branch rule from the spec:
   - **Fresh ID** (reviewer omitted `id` or supplied one that does not match prior-findings context): allocate a new canonical ID, write a new persisted Finding with `created_at = now`, `first_run_id = last_run_id = <current run>`, `disposition: "open"`, append `finding_created` event.
   - **Existing ID** (supplied `id` matches prior-findings context): load the existing Finding, update only `last_run_id`, leave `id` / `created_at` / `first_run_id` / `disposition` untouched, append `finding_reobserved` event.
   
   Then persist run artifacts to `runs/<date>/<pass>/<HHMMSSZ-NNN>/{prompt.md,output.json,findings.json,report.md,git-head.txt}` (output.json is audit-only — the raw reviewer output, unchanged; `findings.json` is the frozen manifest of canonical IDs surfaced by this run with their disposition snapshot at completion time), write/update the persisted Findings into `state/projects/<project>/findings/`, render `report.md` from the persisted Findings *at this moment* and write it once into the run directory (never re-rendered later), render `backlog.md`. The full sequence — normalize, allocate, append events, write files, render — happens inside the per-project write lock so the frozen artifacts and the live state commit together.
-- `internal/dispatcher/scope.go` — resolves a pass's `scope.project` into a concrete file set. `full` walks the project tree honoring the project's ignore rules (use `.gitignore` semantics via `go-git` or shell-out to `git ls-files`). `paths` resolves each entry using the three-rule order from the spec: if it `Stat`s as a directory → recursive expansion via the same `git ls-files` call used by `full` rooted at that directory; else if the entry contains any of `*`, `?`, `[` → `filepath.Glob` (or `doublestar.Glob` if `**` support is wanted); else → treat as a single literal file path. `recent` shells out to `git -C <project> log --since=<window-start> --pretty=format: --name-only HEAD` and de-duplicates the result; `window-start = now - scope.project.window` in UTC. Cadence is never consulted for scope; the config loader rejects `type: recent` without an explicit `window` field, so this code path can assume the field is set. Committer date is what `git log` uses by default so no extra flags. Uncommitted working-tree changes are intentionally not included (see spec). Each scope type returns a `[]string` of files relative to the project root that the prompt assembler reads and embeds.
+- `internal/dispatcher/scope.go` — resolves a pass's `scope.project` into a concrete file set **plus any auxiliary data the prompt assembler needs to stay consistent** (notably the recent-scope base SHA so the manifest and the inline diff cannot diverge). `full` walks the project tree honoring the project's ignore rules (use `.gitignore` semantics via `go-git` or shell-out to `git ls-files`). `paths` resolves each entry using the three-rule order from the spec: if it `Stat`s as a directory → recursive expansion via the same `git ls-files` call used by `full` rooted at that directory; else if the entry contains any of `*`, `?`, `[` → `filepath.Glob` (or `doublestar.Glob` if `**` support is wanted); else → treat as a single literal file path. `recent` resolves in **one git pass**: `git -C <project> log --first-parent --since=<window-start> --pretty=%H HEAD` (newest-first) returns the in-window first-parent commits; if empty, the recent scope is empty (no files, no base SHA — `scope_content.go` produces no diff and `run.go` short-circuits per C2). Otherwise `C_oldest` is the last line. The base SHA is `C_oldest^1` if it has a parent, else the empty-tree SHA `4b825dc642cb6eb9a060e54bf8d69288fbee4904`. The file list is `git diff --name-only <base>..HEAD`. Both the file list and the base SHA are returned to the prompt assembler so `prompt/scope_content.go` uses the *same* base when emitting per-file diffs — manifest and diff cannot disagree. `window-start = now - scope.project.window` in UTC; the config loader rejects `type: recent` without an explicit `window` field. Uncommitted working-tree changes are intentionally not included (see spec). `full` and `paths` return just `[]string` (no base SHA); `recent` returns `{files []string, baseSHA string}`.
 - `otis pass run <project>/<pass>` subcommand for force-runs.
 
 **Verify.** Configure a tiny test project with a `vocabulary-sweep` pass scoped to `paths: ["sample/"]`. Run `otis pass run testproj/vocabulary-sweep --reviewer dummy`. **Confirm `runs/.../prompt.md` contains the BoK slice and the prior findings context (with all four disposition states represented when seeded — open, accepted, deferred, rejected); `output.json` validates against the schema; new finding JSON files land under `findings/`; `dispositions.jsonl` grows; `backlog.md` renders**. Then run again with `--reviewer codex` against a local codex install to confirm the live adapter works.
@@ -276,10 +280,10 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 **Lands.**
 - `internal/state/lastrun.go` — per-project `projects/<project>/last-run.json` persistence keyed by `<pass>`, atomic temp-rename. Sharded so the existing project write lock fully covers the read-modify-write — no global mutable state file. Written at **dispatch start** (after semaphore acquisition, before the reviewer subprocess is launched). Not updated on completion. Failed runs still consume the cadence cycle; cadence governs firing rhythm, not delivery — retries are the operator's job via force-run. The scheduler's due-list pass reads N project files instead of one global file; cheap, and removes the cross-project locking concern.
 - `internal/state/events.go` — `supervisor/events.jsonl` for lifecycle (start, stop, pass dispatch).
-- `internal/scheduler/windows.go` — window membership (`time.Now()` clock injected for tests). Endpoint parser accepts `HH:MM` with `24:00` as an exclusive end-of-day sentinel (so `00:00-24:00` is a valid full-day window). Cross-midnight windows: when `end < start` (e.g., `22:00-06:00`), membership is `now ≥ start || now < end`; otherwise `now ≥ start && now < end`. Both branches share one helper with a table-driven test covering same-day, cross-midnight, exact-boundary, and full-day (`00:00-24:00`) cases.
-- `internal/scheduler/scheduler.go` — every N seconds (configurable, default 30): call `bok.Index.IncrementalSync(ctx)` (cheap when nothing changed, picks up new BoK entries within one tick), then build a due-list — `now - last_run >= cadence` AND `now` ∈ pass's reviewer window. Spread firings (jitter or a simple round-robin order) so cadence cohorts don't bunch at startup.
-- `internal/dispatcher/dispatcher.go` — per-reviewer semaphore + global semaphore plus an in-memory `inFlight map[passKey]*inFlightEntry` guard guarded by its own `sync.Mutex` (separate from the per-project state lock — this guard is dispatcher-internal). `inFlightEntry{state: "queued"|"running", runID string}`. `Enqueue(project, pass, source: scheduled|force)`: lock inFlight; if `(project, pass)` already present, scheduled callers get a no-op return; force-run callers get an `ErrInFlight{State, RunID}` that the REST handler maps to HTTP 409 with body `{state, run_id}` (run_id is `null` while state is `queued`). Else insert a `{state: "queued", runID: ""}` entry, unlock, acquire reviewer semaphore (blocking), acquire global semaphore (blocking), take the project write lock, allocate the run ID, write `last-run.json`, drop the project lock, mutate the inFlight entry to `{state: "running", runID: <id>}`, launch `dispatcher/run.go` in a goroutine. The goroutine wraps the run body in a `defer` that removes the inFlight entry and releases both semaphores — so the entry survives until the run truly completes (success, failure, or panic). This guarantees at most one active run per `(project, pass)`; the prior-findings context cannot be read by two concurrent runs of the same pass. `last-run.json` is still written at dispatch start so failed/crashed runs consume cadence. Force-runs go through the same path with cadence/window eligibility checks skipped. Mirror mercurius's `executeRoundJob` fire-and-forget shape, but wrap with the caps and the in-flight guard that mercurius doesn't have yet.
-- `otis serve` now actually starts the scheduler loop: opens the BoK index, calls `bok.Index.IncrementalSync(ctx)` once before the scheduler loop begins, watches global config for project paths, surfaces sexton-missing as a warning (per spec section 9 — "fail loud, keep running").
+- `internal/scheduler/windows.go` — window membership (`time.Now().Local()` clock injected for tests; supervisor-host-local timezone is the contract — see spec). Endpoint parser accepts `HH:MM` with `24:00` as an exclusive end-of-day sentinel (so `00:00-24:00` is a valid full-day window). Cross-midnight windows: when `end < start` (e.g., `22:00-06:00`), membership is `now ≥ start || now < end`; otherwise `now ≥ start && now < end`. Both branches share one helper with a table-driven test covering same-day, cross-midnight, exact-boundary, and full-day (`00:00-24:00`) cases, plus a timezone-injection test that confirms windows are evaluated against local time even when UTC offset differs.
+- `internal/scheduler/scheduler.go` — every N seconds (configurable, default 30): build a due-list — `now - last_run >= cadence` AND `now` ∈ pass's reviewer window. Spread firings (jitter or a simple round-robin order) so cadence cohorts don't bunch at startup. No BoK index sync — passes read the BoK fresh from disk via `internal/bok/resolve.go` at prompt-assembly time, so new entries that sexton lands are visible immediately.
+- `internal/dispatcher/dispatcher.go` — per-reviewer semaphore + global semaphore plus an in-memory `inFlight map[passKey]*inFlightEntry` guard guarded by its own `sync.Mutex` (separate from the per-project state lock — this guard is dispatcher-internal). `inFlightEntry{state: "queued"|"running", runID string}`. `Enqueue(project, pass, source: scheduled|force)`: lock inFlight; if `(project, pass)` already present, scheduled callers get a no-op return; force-run callers get an `ErrInFlight{State, RunID}` that the REST handler maps to HTTP 409 with body `{state, run_id}` (run_id is `null` while state is `queued`). Else insert a `{state: "queued", runID: ""}` entry, unlock, acquire reviewer semaphore (blocking), acquire global semaphore (blocking). **Post-wait window re-check (scheduled runs only)**: after both semaphores are held, re-evaluate `scheduler.windows.InWindow(reviewer.window, now())`. If the window has closed during the wait, release both semaphores, remove the inFlight entry, and return without allocating a run ID or writing `last-run.json` — the pass stays due. Otherwise (window still open, or force-run source which skips this check) take the project write lock, allocate the run ID, write `last-run.json`, drop the project lock, mutate the inFlight entry to `{state: "running", runID: <id>}`, launch `dispatcher/run.go` in a goroutine. The goroutine wraps the run body in a `defer` that removes the inFlight entry and releases both semaphores — so the entry survives until the run truly completes (success, failure, or panic). This guarantees at most one active run per `(project, pass)`; the prior-findings context cannot be read by two concurrent runs of the same pass. `last-run.json` is still written at dispatch start so failed/crashed runs consume cadence. Force-runs go through the same path with cadence/window eligibility checks skipped at both queue time and post-wait. Mirror mercurius's `executeRoundJob` fire-and-forget shape, but wrap with the caps and the in-flight guard that mercurius doesn't have yet.
+- `otis serve` now actually starts the scheduler loop: watches global config for project paths, surfaces sexton-missing as a warning (per spec section 9 — "fail loud, keep running"). **Orphan worktree cleanup at startup**: per supervised project, run `git -C <project.path> worktree prune`; then scan `<state_dir>/scratch/` for directories whose run IDs are not in the (freshly empty) `in_flight` map and `os.RemoveAll` each. Logs each removal at info level. Crash recovery is automatic; no leaked worktrees.
 - A `--once` flag on `otis serve` for tests / CI: do one due-list pass and exit.
 
 **Verify.** Two passes configured: a `vocabulary-sweep` on `cadence: 1m` and a no-op pass on `cadence: 5m`. Run `otis serve --once` repeatedly, advancing a clock fixture; **assert that the 1m pass fires every iteration and the 5m pass only fires when due, both staying inside their declared windows, and that concurrency caps gate truly-parallel invocations**.
@@ -352,7 +356,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 **Goal.** Move from buildable to demoable, with a story Michael can run on his workstation.
 
 **Lands.**
-- `docs/example/` — example global config, example project config, an example tiny BoK (4–6 entries covering vocabulary, layering, cognitive-load), example mattermost message, instructions for spinning up Ollama with `nomic-embed-text`.
+- `docs/example/` — example global config, example project config, an example tiny BoK (4–6 entries covering vocabulary, layering, cognitive-load — already on disk, no index step required), example mattermost message.
 - `README.md` filled out with the demo walkthrough.
 - `docs/current/` — first migration of built behavior from `docs/future/` per the design-build pipeline. The spec stays in `docs/future/` until everything described there is built; this phase moves the surfaces that *are* built into `docs/current/`.
 - A small smoke-test harness that runs the dummy reviewer end-to-end as part of `go test ./...` to keep the integration glued.
@@ -363,7 +367,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ## Cross-Cutting Concerns Spelled Out
 
-**Sexton handshake.** Otis does no git ops on supervised repos. The global config lists project paths; the supervisor reads them as-is. If a path is missing, log a warning and skip that project's passes. The spec is explicit: "fail loud, keep running." Sexton's "watching" state is the implicit handshake — we do not poll it, we just trust that sexton-synced trees are reasonable. Each run records `git rev-parse HEAD` into `git-head.txt`, which is the audit-trail commitment.
+**Sexton handshake.** Otis never syncs or pulls supervised repos — sexton owns that. Otis does invoke local git commands against each project's clone: `rev-parse HEAD` to capture the SHA at run start, `worktree add/remove` per run, and `worktree prune` at supervisor startup. The global config lists project paths; the supervisor reads them as-is. If a path is missing, log a warning and skip that project's passes. The spec is explicit: "fail loud, keep running." Sexton's "watching" state is the implicit handshake — we do not poll it, we just trust that sexton's last sync delivered a reasonable object database. The captured-SHA + worktree mechanism (see Phase 4 and spec "Repository Management") is what makes `git-head.txt` an exact audit-trail commitment regardless of what sexton does to the upstream mid-run.
 
 **Cross-run finding identity.** No content-hash dedupe in the minimal harness (deferred per spec). The mechanism is the **prior findings context** in the prompt (spec section "Reviewer Interface" item 5): every non-archived finding for the same `(project, pass)` is included with its description, location, current disposition, and human note. The prompt copy tells the reviewer how to read each state — reference the existing ID for `open` reoccurrences, do not re-surface `accepted` / `deferred` / `rejected` items unless the code shows the basis has changed. The codex adapter tests exercise all four disposition states.
 
@@ -382,7 +386,6 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 ## Risks & Watch-Items
 
 - **Pi adapter is the unknown.** Pi's CLI conventions are not as nailed down as codex's. Phase 9 may surface adapter-shape questions that bubble back to the `Reviewer` interface. Acceptable risk — defer until phase 9, treat as discovery.
-- **Embedding-index duplication will rot.** The spec acknowledges this and defers extraction. The risk worth naming: if lore's index evolves between now and the extraction, otis will need to follow or accept drift. Track lore's changes during phases 3–10 so the drift is intentional.
 - **MCP SDK churn.** `modelcontextprotocol/go-sdk` is recent. Pinning a specific version (matching mercurius's pin where possible) keeps surprises manageable.
 - **JSON-schema strictness vs reviewer compliance.** Mercurius's bug fixes for reviewer output drift are valuable prior art; mirror them rather than rediscover. Watch `internal/schema/reviewOutput.go` in mercurius for any patterns worth porting.
 
@@ -391,30 +394,29 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 | Path | Pattern source |
 |---|---|
 | `cmd/otis/main.go` | mercurius `cmd/mercurius/main.go` |
-| `internal/config/{global,project,load}.go` | mercurius `internal/config/config.go`, lore `internal/config/load.go` |
-| `internal/state/{paths,findings,dispositions,backlog,runs,lastrun,events}.go` | mercurius `internal/monitor`, `internal/roundlog` |
-| `internal/bok/{index,vector,search,chunk,frontmatter,ollama,schema.sql,scope}.go` | lore `internal/index/*`, `internal/markdown/frontmatter.go`, `internal/model/ollamaEmbedder.go` |
+| `internal/config/{global,profile,project,compose,load}.go` | mercurius `internal/config/config.go`, lore `internal/config/load.go` |
+| `internal/state/{paths,store,findings,dispositions,backlog,runs,lastrun,events,scratch}.go` | mercurius `internal/monitor`, `internal/roundlog` |
+| `internal/bok/{entry,resolve,frontmatter}.go` | lore `internal/markdown/frontmatter.go` (frontmatter only; index/embedding pattern deferred) |
 | `internal/reviewer/{reviewer,dummy/dummy,codex/codex}.go` | mercurius `internal/reviewer/codex/codexReviewer.go`, mercurius `internal/reviewer/dummy/` |
-| `internal/prompt/{prompt,schema}.go` | mercurius `internal/prompt/prompt.go`, `internal/schema/reviewOutput.go` |
+| `internal/prompt/{prompt,scope_content,schema}.go` | mercurius `internal/prompt/prompt.go`, `internal/schema/reviewOutput.go` |
 | `internal/scheduler/{scheduler,windows}.go` | new (no direct anchor; cadence/window combination is otis-specific) |
-| `internal/dispatcher/{dispatcher,run}.go` | mercurius `internal/broker/broker.go` (executeRoundJob + persistSessionLocked) |
+| `internal/dispatcher/{dispatcher,run,scope,worktree}.go` | mercurius `internal/broker/broker.go` (executeRoundJob + persistSessionLocked) |
 | `internal/api/{router,auth,handlers,render}.go` | new (stdlib mux + file-backed bearer tokens) |
-| `internal/mcp/{server,tools}.go` | mercurius `internal/mcpserver/mcpServer.go` |
+| `internal/client/{config,http}.go` | new (workstation foundation shared by CLI commands and MCP bridge) |
+| `internal/mcp/{bridge,tools}.go` | mercurius `internal/mcpserver/mcpServer.go` (registration pattern only; otis uses HTTPS forward) |
 | `internal/notify/notify.go`, `internal/notify/mattermost/mm.go` | new |
 
 ## Verification (End-to-End)
 
 Once phase 10 lands, the following sequence should work cold:
 
-1. Start Ollama with `nomic-embed-text` available.
-2. `otis bok index --config docs/example/global.yaml` — indexes the example BoK.
-3. `otis serve --config docs/example/global.yaml &` — supervisor starts; scheduler quiet because cadences haven't elapsed.
-4. `otis admin token issue --label workstation` — print a token; copy into `~/.config/otis/config.yaml`.
-5. `otis pass run testproj/vocabulary-sweep --reviewer codex` — force-fire; codex runs; findings land; mattermost message posts; backlog updates.
-6. `otis findings list --project testproj --open` — see the new findings.
-7. `otis accept <FINDING-ID> --note "good catch"` — disposition flips.
-8. Rerun `otis pass run testproj/vocabulary-sweep` — prompt includes the accepted finding in the prior findings context; the reviewer doesn't re-surface it.
-9. From Claude Code, call `otis_list_findings` over MCP — same data, same view.
+1. `otis serve --config docs/example/global.yaml &` — supervisor starts; scheduler quiet because cadences haven't elapsed.
+2. `otis admin token issue --label workstation` — print a token; copy into `~/.config/otis/config.yaml`.
+3. `otis pass run testproj/vocabulary-sweep --reviewer codex` — force-fire; codex runs against a clean worktree pinned to HEAD; findings land; mattermost message posts; backlog updates.
+4. `otis findings list --project testproj --open` — see the new findings.
+5. `otis accept <FINDING-ID> --note "good catch"` — disposition flips.
+6. Rerun `otis pass run testproj/vocabulary-sweep` — prompt includes the accepted finding in the prior findings context; the reviewer doesn't re-surface it.
+7. From Claude Code, call `otis_list_findings` over MCP — same data, same view.
 
 That's the heartbeat in microcosm. Everything after is calibration of the BoK against real codebases via the harvest practice (out-of-band, per the harvest agent guide).
 
@@ -424,4 +426,4 @@ Once this work order is committed alongside the spec, fire mercurius. Both `docs
 
 ## Deferred (Reaffirmed)
 
-Spec section 13 names the deferrals; this work order does not reintroduce any of them. Specifically out of scope for this build: higher permission gradient levels, event-triggered passes, continuous-mode passes, `git worktree` ephemeral checkouts, AST-level location anchors, content-hash dedupe, operator-action MCP tools, severity-hint BoK frontmatter, per-finding-type permission gradients, the lore/otis shared embedding library, and a codified harvest ritual.
+Spec section 13 names the deferrals; this work order does not reintroduce any of them. Specifically out of scope for this build: higher permission gradient levels, event-triggered passes, continuous-mode passes, pass-declared review refs (PR/branch/tag review), AST-level location anchors, content-hash dedupe, operator-action MCP tools, severity-hint BoK frontmatter, per-finding-type permission gradients, in-project BoK augmentation, embedding index + semantic search, and a codified harvest ritual.

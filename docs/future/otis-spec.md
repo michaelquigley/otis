@@ -54,7 +54,7 @@ The **HTTPS + MCP listener** exposes the supervisor's state and operations to tw
 
 The **state directory** persists everything that matters across supervisor restarts: pass-run history, finding objects, dispositions, rendered backlogs, prompt snapshots, raw reviewer outputs, supervisor lifecycle events.
 
-The **body of knowledge** is a separate git repository, sexton-synced. The supervisor maintains an embedding index over it and resolves each pass's declared concerns to a slice of entries via semantic search.
+The **body of knowledge** is a separate git repository, sexton-synced. The supervisor reads it directly from disk at pass time and resolves each pass's declared `include` list to a slice of entries via filesystem walk (directory subtrees and explicit file paths).
 
 The supervisor itself is a deterministic Go process. The cognitive work happens inside the reviewer subprocesses; the supervisor doesn't accumulate context or make judgment calls. It schedules, dispatches, persists, and routes — normal operational machinery you can reason about with standard tooling.
 
@@ -62,7 +62,7 @@ The supervisor itself is a deterministic Go process. The cognitive work happens 
 
 The BoK is a focused, private git repository (anticipated at `git.hq.quigley.com/products/otis-bok`) synchronized by sexton the same way the grimoire is. The supervisor reads from a local checkout that sexton keeps current.
 
-Entries are markdown files, lore-shaped. Light frontmatter for indexing; free-form prose for the guidance itself. The frontmatter fields otis cares about are `title` and `tags` (free-form, for human navigation and as soft anchors for semantic search). **Scope is encoded by location, not frontmatter** — an entry at the top of the central BoK applies to all projects; an entry under `projects/<name>/` in the central BoK applies only to `<name>`. The body is conventional but not enforced: sections like `## guidance`, `## why`, `## examples`, and `## related` recur because they earn their place, but the reviewer reads the whole entry and understands the guidance regardless of structure.
+Entries are markdown files, lore-shaped, and every entry lives under some category subtree — the corpus has no root-level entries. Light frontmatter; free-form prose for the guidance itself. The frontmatter fields otis cares about are `title` and `tags` (free-form, for human navigation and as soft anchors for the eventual semantic search; see Deferred). **Scope is encoded by location, not frontmatter** — an entry under a general category subtree (`vocabulary/`, `layering/`, etc.) applies to all projects; an entry under `projects/<name>/` applies only to `<name>`. The body is conventional but not enforced: sections like `## guidance`, `## why`, `## examples`, and `## related` recur because they earn their place, but the reviewer reads the whole entry and understands the guidance regardless of structure.
 
 ```markdown
 ---
@@ -97,24 +97,33 @@ The BoK repository layout is conventional:
 
 ```
 otis-bok/
-  vocabulary/
+  standard.yaml          # named pass profile (composable; included by per-project configs)
+  go-strict.yaml         # named pass profile
+  intensive.yaml         # named pass profile
+  vocabulary/            # BoK content subtree
   layering/
   cognitive-load/
   projects/
     baab/
+      otis.yaml          # baab's per-project config (public; lives alongside its BoK entries)
+      established-conventions.md
     lore/
+      otis.yaml
+      ...
   README.md
 ```
 
-Top-level directories are conceptual buckets — vocabulary, layering, cognitive-load, and so on. The actual set evolves as the BoK grows; this list is illustrative. The `projects/<name>/` subtree is where project-bound entries live when they're fine in the central repo.
+The BoK repo carries two kinds of artifact: **BoK entries** (markdown, in category subtrees) and **otis configuration** (YAML, at the root for shared profiles and under `projects/<name>/` for per-project files). Top-level subtrees are conceptual buckets — vocabulary, layering, cognitive-load, and so on. The actual set evolves as the BoK grows; this list is illustrative. The `projects/<name>/` subtree is where project-bound entries live when they're fine in the central repo. The repo root holds shared pass profiles (any `*.yaml`), `README.md`, and similar non-indexed files only; the indexer skips any `.md` file directly at the root, and YAML files at the root or under `projects/<name>/` are never indexed as BoK content (they're configuration, parsed by the config loader, not the indexer).
+
+The two roles travel together by design: a new BoK entry that's only useful when a particular pass fires against it can land in the same commit as the pass declaration. Editorial lifecycle, harvest practice, and operational configuration all share one git history.
 
 In the minimal harness the BoK lives entirely in the central repository — there is no in-project BoK layer. Project-specific augmentation as an in-repo `<project>/.otis/bok/` directory is deferred (see "Deferred"); when needed, project-bound guidance goes under `projects/<name>/` in the central BoK and gets the same harvest and review treatment as everything else. Convention is preferred over configuration throughout otis: the BoK lives at one known path, scoped by location.
 
-The supervisor maintains an embedding index over the central BoK. At pass time, each pass's `concerns` list resolves to a slice of top-K BoK entries via semantic similarity, **filtered to the entries in scope for the pass's project**. The scope filter is location-based: for project `P`, search results include entries that live outside the `projects/` subtree (general guidance) and entries under `projects/P/` (P's curated subtree). Entries under `projects/X/` for any `X ≠ P` are excluded. No frontmatter field is consulted; location is the contract. Findings' `bok_refs` point at the specific entries that contributed, so a human triaging a finding can read exactly which guidance the reviewer was working from.
+The supervisor reads the BoK directly from disk at pass time. Each pass's `include` list resolves to a slice of BoK entries by **filesystem walk**: trailing-slash directories expand recursively, slash-bearing literal entries read the named file. The result is **filtered to the entries in scope for the pass's project**: the scope filter is location-based — for project `P`, the slice includes entries that live outside the `projects/` subtree (general guidance) and entries under `projects/P/` (P's curated subtree). Entries under `projects/X/` for any `X ≠ P` are excluded. No frontmatter field is consulted; location is the contract. Findings' `bok_refs` point at the specific entries that contributed, so a human triaging a finding can read exactly which guidance the reviewer was working from.
 
-The indexing approach is borrowed from lore. The two implementations are deliberately duplicated for now; the shared abstraction is expected to be extracted into a library once both have stabilized, but that extraction is not part of this spec. The planning agent has access to lore's code and will firm up the implementation-level details.
+The minimal harness does not maintain an embedding index. The BoK is small and curated; reading it from disk at pass time is cheap and avoids the entire index-refresh lifecycle, embedding-backend dependency, and lore-duplication concern. Semantic search over the BoK is deferred (see Deferred); the `include` list reserves bare-term entries (no `/`) for that future extension, and the loader currently rejects them.
 
-**Index refresh lifecycle.** The supervisor runs an incremental checksum-based BoK sync (the same mechanism lore uses) at two moments: at `otis serve` startup before the scheduler loop begins, and at the top of every scheduler tick before due-list construction. Incremental sync is cheap when nothing has changed (checksum compare, no embedding work), so a per-tick refresh is affordable. New BoK entries that sexton lands on disk are visible to the next pass within one scheduler-tick interval. Force-runs flow through the same dispatch entry point and therefore see whatever the latest tick synced. `otis bok index` remains available as a manual rebuild for operators who want to force a full re-embed.
+New BoK entries that sexton lands on disk are visible to the very next pass — there is no cache to invalidate, no embedding to recompute. The supervisor reads the relevant slice fresh from disk every time it builds a prompt.
 
 ## The Pass
 
@@ -128,9 +137,18 @@ Project scope has three types in the minimal harness:
 
 - `full` — the entire project tree.
 - `paths` — an explicit list of paths or globs within the project. Each entry resolves by one of three rules: if the entry resolves to a directory, it is treated as a tree root and expanded recursively using the same tracked/ignored-file rules as `full` (`.gitignore`-aware via `git ls-files`); if the entry contains glob meta-characters (`*`, `?`, `[`), it is expanded as a standard glob; otherwise it is treated as a single literal file path. The three rules are checked in that order so unambiguous directory inputs do not need glob suffixes.
-- `recent` — code touched within a time window, resolved via git: the set of files modified by commits reachable from `HEAD` whose committer timestamp falls within `now - window` to `now`. The `window` is taken **only** from the pass's own `scope.project.window` field; it is required whenever `type: recent` is set and the config loader rejects a `recent` scope that omits it. Cadence is never used as a fallback for the review window — cadence controls firing frequency, `window` controls what each firing reviews. Committer date (not author date) is the anchor — rebases preserve author date but reset committer date, and the supervisor cares about when the change landed on this branch, not when it was first written. Uncommitted working-tree changes are not in scope; if a project wants those reviewed, it points a `paths` pass at them.
+- `recent` — code touched within a time window, resolved via git: the set of files modified by commits reachable from `HEAD` whose committer timestamp falls within `now - window` to `now`. The `window` is taken **only** from the pass's own `scope.project.window` field; it is required whenever `type: recent` is set and the config loader rejects a `recent` scope that omits it. Cadence is never used as a fallback for the review window — cadence controls firing frequency, `window` controls what each firing reviews. Committer date (not author date) is the anchor — rebases preserve author date but reset committer date, and the supervisor cares about when the change landed on this branch, not when it was first written. Uncommitted working-tree changes are out of scope for the minimal harness — every run reads from a clean per-run worktree pinned at the captured HEAD (see "Repository Management"), so `paths` scopes also review at the captured commit rather than the live working tree.
 
-BoK scope is expressed as a list of *concerns* — short identifiers that resolve to BoK entries via semantic search. `concerns: [vocabulary, naming]` retrieves the top-K BoK entries semantically related to the combined-concern query (concerns concatenated into one search vector, not run separately and unioned). K is configurable per pass via `scope.bok.top_k`; when the pass omits it, the supervisor's `bok.search.default_top_k` (global config) supplies the default. Different passes legitimately want different K — a narrow vocabulary sweep can run with K=5 and stay precise; a broad architectural pass may want K=15 to surface adjacent guidance. Because resolution is search-based rather than tag-based, the BoK can grow without project configs needing to change.
+BoK scope is expressed as a list of **include** entries. Each entry resolves by *form*:
+
+- **Trailing-slash directory** (`vocabulary/`) — every BoK entry under that subtree, recursively. Deterministic; new entries added to the subtree are picked up by the next pass automatically.
+- **File path** (`vocabulary/lens-vs-view`, no trailing slash, no `.md` extension) — that single entry. Deterministic; renames or deletions break the config loudly.
+
+Final BoK slice = the union of every resolution, deduplicated, with the project-location filter (entries under `projects/X/` for `X ≠ pass.project` are dropped) applied on top. Every `include` entry must carry at least one `/`. **Bare terms (no `/`) are reserved for the future semantic-search extension and rejected by the config loader today** — see Deferred for the embedding-index roadmap.
+
+The BoK has no root-level entries — every entry lives under some category subtree (`vocabulary/`, `layering/`, etc.). README and other non-content files may sit at the repo root (and configs always do — shared profiles live there as `*.yaml`), but `include` entries always carry at least one path component. The harvest guide enforces this discipline.
+
+Different passes legitimately want different subtree mixes — a narrow vocabulary sweep might use `include: [vocabulary/]` for full deterministic coverage of one subtree; a broad architectural pass might use `include: [layering/, architecture/, projects/baab/]` to combine multiple subtrees including a project-specific one. The slice grows automatically as new entries land under any included subtree; no config update needed.
 
 ### Cadence and Windows
 
@@ -138,7 +156,7 @@ Passes don't declare wall-clock schedules. They declare *cadence* — how often 
 
 Cadence is a duration: `cadence: 24h`, `cadence: 6h`, `cadence: 1w`. Shorthand aliases (`daily`, `weekly`, `hourly`) parse to the obvious durations.
 
-Windows are named time ranges declared in the global config — `overnight`, `working-hours`, `anytime`, and any custom names the operator wants. Each reviewer is assigned a window in the global config; passes inherit that window through their reviewer. A daily pass on a reviewer assigned to the `overnight` window fires once per night within that window; a 6-hourly pass on a reviewer assigned to `anytime` fires four times a day distributed across all hours. Window endpoints are parsed as `HH:MM` with `24:00` accepted as an exclusive end-of-day sentinel so a full-day window writes cleanly as `00:00-24:00`. Windows whose `end` is earlier than their `start` (`22:00-06:00`) wrap past midnight — the supervisor evaluates membership as `now ≥ start || now < end` rather than the in-range check used when `end > start`.
+Windows are named time ranges declared in the global config — `overnight`, `working-hours`, `anytime`, and any custom names the operator wants. Each reviewer is assigned a window in the global config; passes inherit that window through their reviewer. A daily pass on a reviewer assigned to the `overnight` window fires once per night within that window; a 6-hourly pass on a reviewer assigned to `anytime` fires four times a day distributed across all hours. Window endpoints are parsed as `HH:MM` with `24:00` accepted as an exclusive end-of-day sentinel so a full-day window writes cleanly as `00:00-24:00`. Windows whose `end` is earlier than their `start` (`22:00-06:00`) wrap past midnight — the supervisor evaluates membership as `now ≥ start || now < end` rather than the in-range check used when `end > start`. All window times are interpreted in the **supervisor host's local timezone**; a future global-config field could override this if a host-vs-team timezone mismatch ever surfaces.
 
 The supervisor's scheduling job is: keep a running view of which passes are due (`now - last_run >= cadence`), pick from due passes while respecting per-reviewer and global concurrency caps, and prefer not to bunch up firings of many cheap passes at startup.
 
@@ -148,11 +166,13 @@ Force-runs (`otis pass run <project>/<pass>` and the matching REST endpoint) byp
 
 The dispatcher maintains an in-memory `in_flight` map keyed by `(project, pass)`. An entry is added when the pass is accepted for enqueue and removed when the reviewer goroutine returns (success, failure, or panic). Each entry carries a `state` (`queued` while waiting on the reviewer/global semaphores, `running` once the run ID is allocated at dispatch start) and the `run_id` once allocated. Both scheduled enqueues and force-runs check the map before acquiring a semaphore: scheduled enqueues are skipped silently if the pass is already in flight (no `last_run` update, no second goroutine); force-runs are rejected with a 409-shaped error whose body carries `{state: "queued" | "running", run_id: <id or null>}` — `run_id` is `null` while the colliding pass is still queued, populated once it has been dispatched. This keeps the API contract honest about what's knowable at the moment of collision. A long-running pass blocks both its own next scheduled firing and any overlapping force-run until the goroutine completes — at most one active run per `(project, pass)`, so the prior-findings context the reviewer sees can never be observed by two concurrent runs of the same pass. `last_run.json` is still written at dispatch start so failed and crashed runs consume their cadence cycle. The map lives only in process memory; the supervisor is a singleton so no on-disk reservation is required.
 
+**Post-wait window re-check.** Scheduled enqueues check window membership at scheduler-tick time, but the queue can drain slowly under saturated caps. Before allocating the run ID and writing `last_run.json`, the dispatcher re-checks window membership for scheduled runs. If the window has closed during the wait, the dispatcher drops the run: releases both semaphores, removes the in-flight entry, and crucially **does not write `last_run.json`** so the pass remains due — the next tick gets a fresh chance during a fresh window. Force-runs skip this re-check (they bypass window eligibility by definition; see Force-runs above).
+
 ### Top-N Discipline
 
 Each pass declares `top_findings: N` — the maximum number of findings the reviewer should return. The default at the project level is low (3 is the suggested default), biasing the whole system toward terse high-signal output.
 
-The semantics are *best N*, not *up to N*. The reviewer's prompt instructs it to rank candidate findings by impact on cognitive load and return only the top N. Returning fewer findings is correct when nothing stronger exists; zero findings is a valid output when the codebase is clean for that pass's concerns.
+The semantics are *best N*, not *up to N*. The reviewer's prompt instructs it to rank candidate findings by impact on cognitive load and return only the top N. Returning fewer findings is correct when nothing stronger exists; zero findings is a valid output when the codebase is clean against the pass's `include` slice.
 
 This discipline is enforced in the global reviewer prompt template rather than per-pass, so all reviewers across all passes operate under the same instruction. The vision doc's calibration target — *reduce cognitive load*, not *find smells* — is what `top_findings` operationalizes.
 
@@ -163,10 +183,10 @@ Each reviewer (claude code, codex, pi) implements a small interface: accept an a
 The dispatcher constructs the prompt with a fixed shape:
 
 1. **Role and goal.** Otis-reviewer for pass `X` on project `Y`; the goal is to surface the top N findings that would reduce cognitive load.
-2. **BoK slice.** The semantically-resolved entries for this pass's concerns.
-3. **Project context.** Non-BoK project metadata that orients the reviewer: project name, description, primary language, anything declared at the project level the reviewer needs to read the code in context. BoK guidance does not enter via this section — it enters only through the resolved BoK slice in item 2, so concerns/top_k actually gate what guidance the reviewer sees.
+2. **BoK slice.** The resolved entries for this pass's `include` list — every entry under each listed directory subtree plus each listed file-path entry, deduplicated, project-location filtered. Read fresh from disk; no index. See "The Pass / Scope" for the resolution rules.
+3. **Project context.** Non-BoK project metadata that orients the reviewer: project name, description, primary language, anything declared at the project level the reviewer needs to read the code in context. BoK guidance does not enter via this section — it enters only through the resolved BoK slice in item 2, so the pass's `include` list actually gates what guidance the reviewer sees.
 4. **Scope content.** Every prompt carries a **file manifest** (the resolved in-scope paths relative to the project root) and the project's git HEAD at pass-start. Inline content depends on scope type and a per-supervisor byte budget:
-    - **`recent`** — inline the diff that captures the changes that landed in the window. The boundary is derived from the time window precisely: walk **first-parent only** from `HEAD` (`git log --first-parent`) and select commits whose committer timestamp falls in `[now - window, now]`. If the selection is empty the recent scope is empty (no diff, no files, the pass is a no-op for that tick). Otherwise identify the oldest selected first-parent commit `C_oldest`. If `C_oldest` has a first parent, emit `git diff C_oldest^1..HEAD -- <file>` per in-scope file. If `C_oldest` is the repository's root commit (no parent), diff against the empty-tree object (`4b825dc642cb6eb9a060e54bf8d69288fbee4904`). First-parent tracing is essential: walking all reachable commits would let merges pull in changes that landed via side branches outside the current branch's window.
+    - **`recent`** — inline the diff that captures the changes that landed in the window. The boundary is derived from the time window precisely: walk **first-parent only** from `HEAD` (`git log --first-parent`) and select commits whose committer timestamp falls in `[now - window, now]`. If the selection is empty the recent scope is empty and the dispatcher short-circuits the entire pass: no reviewer invocation, no prompt assembly, no `finding_*` events, no mattermost message. The run directory is still written with a minimal `prompt.md` noting "no commits in window," empty `output.json`, empty `findings.json`, and the normal `git-head.txt` and `report.md` — so the pass shows up in `otis report show` as a documented no-op rather than silently disappearing. `last_run.json` still updates at dispatch start so cadence advances normally. Otherwise (non-empty selection) identify the oldest selected first-parent commit `C_oldest`. If `C_oldest` has a first parent, emit `git diff C_oldest^1..HEAD -- <file>` per in-scope file. If `C_oldest` is the repository's root commit (no parent), diff against the empty-tree object (`4b825dc642cb6eb9a060e54bf8d69288fbee4904`). First-parent tracing is essential: walking all reachable commits would let merges pull in changes that landed via side branches outside the current branch's window.
     - **`paths` / `full`** — inline file contents up to a per-file byte cap (default 8 KiB) and a total scope-content cap (default 256 KiB), both configurable in the global config (`prompt.per_file_bytes`, `prompt.total_scope_bytes`). Files above the per-file cap appear in the manifest with a `truncated: N→K bytes` marker.
     Reviewer adapters operate with read-only filesystem access (see permission discipline), so when the reviewer needs to see more than what was inlined it reads files from the manifest's paths directly. The manifest-plus-bounded-inline shape is the same across `full`, `paths`, and `recent` so the reviewer's behavior doesn't fork on scope type — only what's inlined changes.
 5. **Prior findings context.** Every non-archived finding for the same `(project, pass)` pair — `open`, `accepted`, `deferred`, and `rejected` alike — with description, location, current disposition, and a short **note history**. The note history is the ordered list of human notes attached to disposition-change events, each tagged with the disposition it accompanied (e.g., `deferred: "needs design review first"` → `accepted: "addressed in PR #42"`). This lets the reviewer see why a finding moved through the states it did, not just where it ended up — which matters when a finding bounced through `deferred` before being `accepted`, or when an `accepted` note explains exactly which commit was supposed to fix it. The reviewer is instructed how to treat each state: for `open`, reference the existing ID when surfacing the same issue; for `accepted`, the fix is planned or in flight and the reviewer should not re-surface unless the code shows the fix did not land; for `deferred` or `rejected`, the issue is known and should not be re-surfaced. This is the substrate that makes cross-run identity work — if only open findings were shown, an accepted finding could be silently duplicated with a new ID the next time the pass ran.
@@ -311,7 +331,7 @@ Every run gets a globally-unique-within-otis run ID assigned by the dispatcher a
 
 `backlog.md` is a rendered human-readable view of open findings, regenerated after each disposition change. It exists so humans browsing the state directory directly (in an editor, file browser, or git log) see something current; the API is the primary interaction surface.
 
-`runs/YYYY-MM-DD/<pass-name>/<HHMMSSZ-NNN>/` is the per-pass audit trail (see Run ID). Each run produces a fresh directory containing the assembled prompt, the raw reviewer output, a frozen finding manifest, a rendered markdown report, and the git HEAD at pass-start. Findings are always traceable to a specific commit, even when the working tree moves between runs.
+`runs/YYYY-MM-DD/<pass-name>/<HHMMSSZ-NNN>/` is the per-pass audit trail (see Run ID). Each run produces a fresh directory containing the assembled prompt, the raw reviewer output, a frozen finding manifest, a rendered markdown report, and the git HEAD at pass-start. Findings are traceable to a specific commit exactly — the per-run worktree (see "Repository Management") pins the review at the captured SHA, so `git-head.txt` is authoritative regardless of what sexton does to the upstream mid-run.
 
 The run report is **frozen at completion**: `report.md` and `findings.json` are written once inside the per-project critical section, after every persisted Finding for this run has been written and every disposition event has been appended. From then on, the report endpoint and any mattermost message link serve the stored markdown verbatim — re-rendering does not happen, so a disposition flipped tomorrow does not change what yesterday's report says. To see current state, consumers use `otis findings list` / `findings show` / the live API endpoints, which read the persisted Findings as they are *now*. The run report is *then*. This separation prevents the audit-trail slippage where an old mattermost message silently updates as state moves.
 
@@ -327,9 +347,19 @@ Cross-process locking (file locks, advisory locks) stays deferred. The superviso
 
 Otis has two configuration files: per-project (`otis.yaml` at the project repo root) and global (location TBD by the planning agent — likely `/etc/otis/otis.yaml` or similar).
 
-### Per-Project: `otis.yaml`
+### Per-Project Configuration
+
+Project repos no longer carry an `otis.yaml`; project repos hold only code. Per-project configuration lives in the BoK repo at `projects/<name>/otis.yaml` (the public, central convention) or at an operator-controlled path declared in the global config (when the configuration contains secret-sauce passes the operator doesn't want to share publicly).
+
+Per-project configs are **composed** from one or more shared **pass profiles** at the BoK root (`<bok.path>/standard.yaml`, `<bok.path>/go-strict.yaml`, etc.) plus project-specific additions, overrides, and disables. The composition model is *one level deep*: project configs include profiles; profiles cannot include other profiles. This keeps resolution trivially predictable.
 
 ```yaml
+# example: <bok.path>/projects/baab/otis.yaml
+
+include_configs:
+  - standard                     # resolves to <bok.path>/standard.yaml
+  - go-strict                    # resolves to <bok.path>/go-strict.yaml
+
 project:
   name: baab
   description: groove-tagged drum library compositional tool
@@ -337,13 +367,36 @@ project:
     mattermost: "#otis-baab"
   top_findings: 3
 
+disable:
+  - intensive-architecture-sweep # drop this inherited pass entirely
+
+passes:
+  - name: baab-vocabulary-extra  # new pass, project-only
+    description: baab-specific terminology audit
+    scope:
+      project: { type: full }
+      bok:
+        include: [projects/baab/]
+    reviewer: { kind: pi }
+    cadence: 12h
+  - name: vocabulary-sweep       # override an inherited pass — field-merge over standard's version
+    top_findings: 5              # everything else inherited from standard
+```
+
+`top_findings` (the cap on findings the reviewer returns) is **not** the same as a BoK-side budget — the minimal harness has no semantic search and therefore no `top_k`. Every `include` resolution is unconditional; the slice is whatever the listed paths cover.
+
+A shared profile is the same shape minus the `include_configs`, `disable`, and `project` blocks:
+
+```yaml
+# example: <bok.path>/standard.yaml
+
 passes:
   - name: vocabulary-sweep
     description: cross-module naming consistency
     scope:
       project: { type: full }
       bok:
-        concerns: [vocabulary, naming]
+        include: [vocabulary/, naming/]
     reviewer: { kind: pi }
     cadence: 24h
 
@@ -354,8 +407,7 @@ passes:
         type: paths
         paths: ["internal/"]
       bok:
-        concerns: [layering, dependency-direction]
-        top_k: 5
+        include: [layering/]
     reviewer: { kind: codex }
     cadence: 6h
     top_findings: 5
@@ -367,21 +419,33 @@ passes:
         type: recent
         window: 24h
       bok:
-        concerns: [architecture, cognitive-load]
-        top_k: 15
+        include:
+          - architecture/established-patterns
+          - cognitive-load/
     reviewer: { kind: claude-code }
     cadence: 24h
 ```
 
-Project-level defaults (notification routing, finding budget) apply to all passes; individual passes override as needed.
+### Composition Resolution
+
+For project `P` whose config file declares `include_configs: [A, B]`, `disable: [Y]`, and per-pass entries:
+
+1. Load `<bok.path>/A.yaml` and `<bok.path>/B.yaml` in listed order. Union their `passes` lists keyed by `name`. **A pass name appearing in more than one included profile is a hard error** — the operator picked incompatible profiles and must resolve it explicitly.
+2. Drop every pass in the union whose `name` is listed in `disable`.
+3. Walk `P`'s own `passes` list. Each entry either:
+   - **Adds** a new pass when its `name` is not already in the (post-disable) inherited set.
+   - **Overrides** an inherited pass when its `name` matches one. The override is field-merged over the inherited pass via `dd`'s normal semantics — fields present in the override replace, fields absent inherit unchanged.
+4. Project-level fields (`project`, `disable`) are project-only — profiles cannot carry them.
+
+The config loader runs `otis config check` against the composed result and reports hard errors with the specific file + line that introduced the problem.
+
+Project-level defaults (notification routing, finding budget) apply to every pass in the composed set; individual passes override as needed.
 
 ### Global Config
 
 ```yaml
 bok:
-  path: /var/otis/bok
-  search:
-    default_top_k: 8           # K for combined-concern semantic search when a pass omits scope.bok.top_k
+  path: /var/otis/bok            # filesystem path to the sexton-synced BoK repo (read directly; no index in the minimal harness)
 
 storage:
   state_dir: /var/otis/state
@@ -430,9 +494,14 @@ windows:
 global_concurrency_cap: 6
 
 projects:
-  - path: /repos/baab
-  - path: /repos/lore
-  - path: /repos/mercurius
+  - name: baab
+    path: /repos/baab                                # source for git worktree (object store)
+    # config defaults to <bok.path>/projects/baab/otis.yaml when omitted
+  - name: lore
+    path: /repos/lore
+    config: /etc/otis/private/lore.yaml              # private config outside the shared BoK
+  - name: mercurius
+    path: /repos/mercurius
 ```
 
 Operator-level concerns live in the global config: BoK location, storage paths, mattermost details, reviewer binaries and models, concurrency caps, scheduling windows, and the list of supervised repository paths. Project configs don't see any of this — they declare intent, the operator declares policy.
@@ -479,7 +548,7 @@ Workstation configuration is a small file with the supervisor's URL and a bearer
 
 MCP tools mirror the REST surface. Digitals call them the way they call any other MCP tool.
 
-The `otis mcp` subcommand runs locally on the workstation as a thin stdio bridge — it speaks MCP to the workstation's MCP client and forwards each tool invocation to the supervisor over the same authenticated HTTPS surface the `otis` CLI uses, reading `~/.config/otis/config.yaml` for the supervisor URL and bearer token. **The MCP bridge never opens the state store directly.** Every state-mutating tool call goes through an HTTPS endpoint on the supervisor, so the single process that owns the per-project locks is also the only writer. This keeps the C6 state-mutation invariant intact regardless of how many MCP clients are connected from how many workstations.
+The `otis mcp` subcommand runs locally on the workstation as a thin stdio bridge — it speaks MCP to the workstation's MCP client and forwards each tool invocation to the supervisor over the same authenticated HTTPS surface the `otis` CLI uses, reading `~/.config/otis/config.yaml` for the supervisor URL and bearer token. **The MCP bridge never opens the state store directly.** Every state-mutating tool call goes through an HTTPS endpoint on the supervisor, so the single process that owns the per-project locks is also the only writer. This keeps the State Mutation Invariant (see "State and Audit") intact regardless of how many MCP clients are connected from how many workstations.
 
 The minimal harness exposes the read side plus disposition writes: `otis_list_findings`, `otis_get_finding`, `otis_get_report`, `otis_disposition_finding`. Operator actions (force-run a pass, reload config) are CLI-only in the minimal harness; MCP exposure can be added later if there's a real reason for a digital to trigger one.
 
@@ -491,15 +560,24 @@ mTLS is a reasonable long-term direction but adds operational overhead the minim
 
 ## Repository Management
 
-The supervisor needs local checkouts of every project it watches — for reading `otis.yaml` and feeding code content to reviewers (which operate on filesystem paths).
+Project repos hold only code; otis configuration lives in the BoK repo (see "The Body of Knowledge"). The supervisor needs local clones of every supervised project repo, but only as the **upstream git object source** for the per-run worktree it creates — the supervisor never reads code content directly from the sexton-synced tree.
 
-In the minimal harness, sexton handles repository sync. The operator declares the repository paths in the global config; sexton keeps those paths current using the same mechanism that keeps grimoire checkouts current across workstations. Otis itself does not perform git operations on supervised repositories.
+In the minimal harness, sexton handles repository sync. The operator declares each supervised project's repo path in the global config; sexton keeps that path current using the same mechanism that keeps grimoire checkouts current across workstations. Otis itself does not perform git operations on the supervised repositories beyond `git rev-parse HEAD` and `git worktree add/remove`.
 
-The freshness model is loose. When a pass runs, the checkout's freshness is whatever sexton's last sync delivered. This is acceptable for the minimal harness — passes are about state-over-time, not real-time analysis. Otis records the git HEAD at pass-start in the run's audit trail, so every finding is traceable to a specific commit even if the working tree moves between runs.
+### Per-run worktrees
+
+Each pass run gets its own clean ephemeral worktree at a captured SHA. The lifecycle:
+
+1. At dispatch start, the dispatcher captures the project's HEAD: `git -C <project_path> rev-parse HEAD` → `captured_sha`. This is the SHA the run will review against.
+2. The dispatcher creates an isolated worktree at `<state_dir>/scratch/<run_id>/` via `git -C <project_path> worktree add <state_dir>/scratch/<run_id>/ <captured_sha>`. The worktree shares the project clone's object database, so creation is fast and disk-cheap.
+3. Every read otis performs for the run (scope resolution, file content for prompt inlining, the reviewer subprocess's `-C <working_dir>` argument) targets the worktree path, never the sexton-synced tree.
+4. The run's `git-head.txt` records `captured_sha`. Because the worktree is pinned to that SHA, the audit-trail claim "every finding is traceable to a specific commit" is exact — sexton can sync the upstream mid-run and the worktree is unaffected.
+5. After the run completes (success, failure, or panic), the dispatcher runs `git -C <project_path> worktree remove <state_dir>/scratch/<run_id>/` via a `defer` in the goroutine wrapper.
+6. At supervisor startup, `otis serve` runs `git -C <project_path> worktree prune` per project and removes any `state_dir/scratch/<run_id>/` directories whose run IDs are not in the (freshly empty) `in_flight` map. Crash recovery, no leaked worktrees.
 
 If a declared project path doesn't exist when the supervisor starts (sexton hasn't run yet, or the path is misconfigured), the supervisor logs a warning and skips that project's passes. The operator can fix it and otis picks up on the next config reload. This is the right failure mode for a long-running supervisor — fail loud, keep running.
 
-A future capability — `git worktree add` for ephemeral, clean checkouts at arbitrary refs — is anticipated. The pass configuration will grow a `git:` block declaring a ref and a `clean: true` flag, and the supervisor will spin up an ephemeral worktree in `<state_dir>/scratch/<run_id>/` for the duration of the pass. Sharing the object store with sexton's clone keeps this fast. The reviewer interface and pass schema have natural extension points for this. It is not part of the minimal harness.
+A future capability — pass-declared review refs (PR branches, tags, arbitrary commits) — is anticipated. The pass configuration will grow a `git:` block declaring a ref override, and the dispatcher will use that ref instead of `HEAD` when capturing the worktree SHA. The mechanism is already in place; only the schema extension is deferred. See Deferred for details.
 
 ## Notification
 
@@ -529,7 +607,7 @@ Three concrete walk-throughs.
 
 The scheduler observes that the `baab/vocabulary-sweep` pass is due (last fired more than 24 hours ago, currently inside the `anytime` window for the `pi` reviewer). It allocates a worker slot from pi's concurrency pool and dispatches.
 
-The dispatcher constructs the prompt: it resolves the pass's concerns (`[vocabulary, naming]`) against the BoK index, retrieving the top-K relevant entries — `vocabulary/lens-vs-view`, `vocabulary/library-overloads`, `naming/established-conventions`. It loads the project context (name, description, primary language from `otis.yaml`), the project's full source tree (the pass declares `scope.project.type: full`), and the seven open findings in `baab/dispositions.jsonl`. It assembles all of this into a single prompt with the finding output schema and `top_findings: 3` cap.
+The dispatcher constructs the prompt: it resolves the pass's `include: [vocabulary/, naming/]` by walking the BoK on disk. Both entries are trailing-slash directories so the slice is the union of everything under those two subtrees — `vocabulary/lens-vs-view`, `vocabulary/library-overloads`, `naming/established-conventions`, and any other entries that have landed in either subtree since the last harvest. It loads the project context (name, description, primary language from the resolved project config), the project's full source tree (the pass declares `scope.project.type: full`), and the seven open findings in `baab/dispositions.jsonl`. It assembles all of this into a single prompt with the finding output schema and `top_findings: 3` cap.
 
 The dispatcher invokes `pi -p ... --mode json` configured for read-only tool access. Pi runs in fresh context, reads what it needs from the filesystem, and emits structured findings on stdout. The dispatcher validates the output against the schema, writes the run's artifacts to `state/projects/baab/runs/2026-05-13/vocabulary-sweep/`, generates new finding records and appends `finding_created` events to `dispositions.jsonl`, renders an updated `backlog.md`, and posts a mattermost message to `#otis-baab` linking to the rendered report.
 
@@ -559,7 +637,7 @@ The following are deliberately out of scope for the minimal harness. They are re
 
 **Continuous-mode passes.** A pass that runs, finishes, and immediately starts again — useful for very cheap reviewers — is supportable in the same architecture but not in the first build.
 
-**Clean ephemeral checkouts via `git worktree`.** The minimal harness reads from sexton-synced working trees. Branch reviews, PR reviews, and other use cases that need a pristine checkout at an arbitrary ref are anticipated; the `git:` block on a pass is the configuration surface, the worktree mechanism is the implementation. Not in scope for the minimal harness because sexton-synced trees cover the foundational use cases.
+**Pass-declared review refs (PR / branch / tag review).** The worktree mechanism is in scope for the minimal harness (see "Repository Management"), but each pass currently reviews the upstream's `HEAD` at dispatch start. A `git:` block on the pass — declaring a different ref to capture (a PR branch, a tag, an arbitrary commit) — is a natural extension once the foundational use cases (cadence-based heartbeat against `HEAD`) are exercised. The dispatcher's `captured_sha` step is the obvious extension point.
 
 **AST-level location anchors.** Findings reference code by file and line range. Function, type, and other AST-level anchors are useful but not load-bearing for the minimal harness.
 
@@ -569,11 +647,11 @@ The following are deliberately out of scope for the minimal harness. They are re
 
 **`severity_hint` and other BoK frontmatter expansions.** The minimal entry frontmatter has `title`, `tags`, and `created`. Calibration aids like a BoK-author's severity suggestion are interesting but might not earn their keep; defer until operational feedback says otherwise.
 
-**In-project BoK augmentation at `<project>/.otis/bok/`.** Project-bound guidance can already live under `projects/<name>/` in the central BoK, which keeps the corpus, the embedding index, and the editorial pipeline single-sourced. Letting projects ship their own BoK fragments in-repo is a real eventual capability — a project's `AGENTS.md`-adjacent surface where local conventions get codified without round-tripping through the central repo — but it introduces a second source, a second sync path, and a merge model. Defer until the central-only model is exercised enough to know what the in-repo layer should actually carry.
+**In-project BoK augmentation at `<project>/.otis/bok/`.** Project-bound guidance can already live under `projects/<name>/` in the central BoK, which keeps the corpus and the editorial pipeline single-sourced. Letting projects ship their own BoK fragments in-repo is a real eventual capability — a project's `AGENTS.md`-adjacent surface where local conventions get codified without round-tripping through the central repo — but it introduces a second source, a second sync path, and a merge model. Defer until the central-only model is exercised enough to know what the in-repo layer should actually carry.
 
 **Per-finding-type permission gradients.** The vision document raises the possibility that vocabulary fixes could graduate to autonomous fast while architectural fixes stay surface-only indefinitely. This is appealing but is a refinement on the higher-permission-level work — not load-bearing until the gradient itself is moving forward.
 
-**Shared embedding library between lore and otis.** Both will implement the same indexing pattern using lore's approach as the reference. Library extraction happens once both have stabilized and the right abstraction is visible. The planning agent has access to lore's code and will firm up the implementation specifics.
+**Embedding index and semantic search.** The minimal harness reads the BoK directly from disk and supports `include` entries that are either directory subtrees or explicit file paths. When the BoK grows past the point where directory-based selection feels coarse — or when operators want broader semantic recall against the corpus — an embedding index (borrowed from lore's pattern) adds bare-term semantic resolution to `include` lists alongside the existing path forms. The `include` schema is forward-compatible: a bare term in the list (no `/`) is the reserved syntax for this extension, and the loader rejects it today. The future index also unlocks a per-pass `top_k` budget on the semantic portion. Eventual library extraction with lore (once both implementations stabilize) is the natural follow-on.
 
 **Codified operational feedback ritual.** The harvest practice (humans and design agents collaborating to develop new BoK entries from observed runs) is expected to be emergent rather than scheduled, the way the mercurius feedback loop is. No protocol, no calendar — operational observation drives improvement when the operator is moved to act.
 
@@ -584,7 +662,7 @@ The following are deliberately out of scope for the minimal harness. They are re
 - `concepts/frankie.md` — the architectural sibling. Otis is frankie-shaped: heartbeat-driven peer agent with a chat surface and a rolling backlog over a different domain.
 - `research/software/ralph-loops.md` — the broader pattern landscape. Each otis pass is a slow-cadence Ralph iteration; the supervisor is the loop driver.
 - `software/sexton/sexton-spec.md` — the upstream of all otis repository management.
-- `software/lore/` — the reference implementation for the embedding index. Duplicated in otis for the minimal harness; library extraction deferred.
+- `software/lore/` — the reference implementation for embedding-indexed markdown. The minimal otis harness does not use an index; lore's pattern is the obvious basis when semantic search is added (see Deferred).
 
 ## Status
 

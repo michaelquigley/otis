@@ -14,7 +14,7 @@ The result is the body of knowledge — the substrate otis reads against when ru
 
 ## Inputs
 
-A project codebase, typically named at the start of a harvest session. Filesystem access to the repo. Optionally: the project's `AGENTS.md` if it has one, `docs/current/` if behavior is documented, and any prior BoK entries in the central `otis-bok` repo — general guidance at the top level and project-bound entries under `projects/<name>/`.
+A project codebase, typically named at the start of a harvest session. Filesystem access to the repo. Optionally: the project's `AGENTS.md` if it has one, `docs/current/` if behavior is documented, and any prior BoK entries in the central `otis-bok` repo — general guidance under category subtrees (`vocabulary/`, `layering/`, …) and project-bound entries under `projects/<name>/`. The BoK repo also carries otis configuration (shared pass profiles as `*.yaml` files at the root; per-project configs at `projects/<name>/otis.yaml`); harvest agents read those if they want to know which passes are scheduled to fire against the entries they're authoring, but harvesting configs themselves is not part of the role.
 
 Conversation with Michael as the editorial partner.
 
