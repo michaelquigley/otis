@@ -71,6 +71,7 @@ type ReviewerConfig struct {
 	ConcurrencyCap int
 	Window         string
 	DryRun         bool `dd:",+omitempty"`
+	OutputPath     string
 }
 
 type WindowConfig struct {
@@ -231,6 +232,7 @@ func (c *GlobalConfig) Resolve(baseDir string) error {
 	for _, reviewer := range c.Reviewers {
 		if reviewer != nil {
 			reviewer.Binary = resolveCommandPath(baseDir, reviewer.Binary)
+			reviewer.OutputPath = resolvePath(baseDir, reviewer.OutputPath)
 		}
 	}
 	for _, project := range c.Projects {

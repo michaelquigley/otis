@@ -217,7 +217,11 @@ func findPass(project *config.ResolvedProject, name string) *config.Pass {
 func buildReviewer(global *config.GlobalConfig, pass *config.Pass, kind string, dummyOutputPath string) (reviewer.Reviewer, string, error) {
 	switch kind {
 	case "dummy":
-		return dummy.New(dummy.Options{OutputPath: dummyOutputPath}), "dummy", nil
+		outputPath := dummyOutputPath
+		if outputPath == "" && global != nil && global.Reviewers != nil && global.Reviewers["dummy"] != nil {
+			outputPath = global.Reviewers["dummy"].OutputPath
+		}
+		return dummy.New(dummy.Options{OutputPath: outputPath}), "dummy", nil
 	case "codex":
 		cfg := global.Reviewers["codex"]
 		if cfg == nil {

@@ -7,7 +7,9 @@ passes:
       bok:
         include:
           - vocabulary/
+          - layering/
+          - cognitive-load/
     reviewer:
-      kind: codex
+      kind: dummy
     cadence: 24h
     top_findings: 3

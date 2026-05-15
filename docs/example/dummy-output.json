@@ -1,0 +1,18 @@
+{
+  "findings": [
+    {
+      "severity": "high",
+      "title": "view vocabulary drifts from lens convention",
+      "location": {
+        "file": "sample/main.go",
+        "lines": "3-5"
+      },
+      "bok_refs": [
+        "vocabulary/lens-vs-view",
+        "cognitive-load/repeated-context-switches"
+      ],
+      "description": "The demo code exposes a View helper even though the BoK uses lens for perspectival surfaces. Keeping both terms in the same layer makes reviews compare vocabulary instead of behavior.",
+      "suggested_fix": "Rename the helper and caller-facing comments from View to Lens, or add a project-specific BoK note explaining why view is the stable term here."
+    }
+  ]
+}

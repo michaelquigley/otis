@@ -16,11 +16,15 @@ api:
 
 notification:
   mattermost:
-    url: https://mattermost.example.com/hooks
+    url: ""
     token_env: MATTERMOST_TOKEN
   report_base_url: https://otis.example.com
 
 reviewers:
+  dummy:
+    concurrency_cap: 1
+    window: manual
+    output_path: ./dummy-output.json
   codex:
     binary: codex
     default_model: gpt-5.4
@@ -38,6 +42,8 @@ reviewers:
     window: anytime
 
 windows:
+  manual:
+    hours: "00:00-00:00"
   anytime:
     hours: "00:00-24:00"
 
