@@ -49,10 +49,10 @@ type NoopRunRequest struct {
 }
 
 type RunFindingSnapshot struct {
-	ID          string `json:"id"`
-	Severity    string `json:"severity"`
-	Title       string `json:"title"`
-	Disposition string `json:"disposition"`
+	ID          string
+	Severity    string
+	Title       string
+	Disposition string
 }
 
 // String renders the canonical run id.
@@ -86,6 +86,10 @@ func (p *Project) AllocateRunID(pass string, at time.Time) (string, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
+	return p.allocateRunIDLocked(pass, at)
+}
+
+func (p *Project) allocateRunIDLocked(pass string, at time.Time) (string, error) {
 	if err := ValidateIDComponent(pass); err != nil {
 		return "", fmt.Errorf("pass: %w", err)
 	}
@@ -253,11 +257,10 @@ func (p *Project) writeRunArtifactsLocked(id RunID, prompt string, output json.R
 	if err := atomicWriteFile(filepath.Join(runDir, "output.json"), appendPrettyJSON(output), 0o600); err != nil {
 		return err
 	}
-	rawFindings, err := json.MarshalIndent(snapshots, "", "  ")
+	rawFindings, err := marshalDDJSONSlice(snapshots)
 	if err != nil {
 		return err
 	}
-	rawFindings = append(rawFindings, '\n')
 	if err := atomicWriteFile(filepath.Join(runDir, "findings.json"), rawFindings, 0o600); err != nil {
 		return err
 	}

@@ -1,7 +1,6 @@
 package state
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,26 +19,26 @@ const (
 )
 
 type Location struct {
-	File  string `json:"file"`
-	Lines string `json:"lines"`
+	File  string
+	Lines string
 }
 
 // Finding is the persisted finding schema.
 type Finding struct {
-	ID           string    `json:"id"`
-	Project      string    `json:"project"`
-	Pass         string    `json:"pass"`
-	Reviewer     string    `json:"reviewer"`
-	FirstRunID   string    `json:"first_run_id"`
-	LastRunID    string    `json:"last_run_id"`
-	CreatedAt    time.Time `json:"created_at"`
-	Severity     string    `json:"severity"`
-	Title        string    `json:"title"`
-	Location     Location  `json:"location"`
-	BokRefs      []string  `json:"bok_refs"`
-	Description  string    `json:"description"`
-	SuggestedFix string    `json:"suggested_fix"`
-	Disposition  string    `json:"disposition"`
+	ID           string
+	Project      string
+	Pass         string
+	Reviewer     string
+	FirstRunID   string
+	LastRunID    string
+	CreatedAt    time.Time
+	Severity     string
+	Title        string
+	Location     Location
+	BokRefs      []string
+	Description  string
+	SuggestedFix string
+	Disposition  string
 }
 
 // FindingID is the parsed canonical finding id.
@@ -301,7 +300,7 @@ func (p *Project) readFindingWithIDLocked(id FindingID) (*Finding, error) {
 		return nil, err
 	}
 	var finding Finding
-	if err := json.Unmarshal(raw, &finding); err != nil {
+	if err := bindDDJSON(&finding, raw); err != nil {
 		return nil, err
 	}
 	return &finding, nil
@@ -319,11 +318,10 @@ func (p *Project) writeFindingWithIDLocked(id FindingID, finding *Finding) error
 	if id.Project != p.name {
 		return fmt.Errorf("finding %q belongs to project %q, not %q", finding.ID, id.Project, p.name)
 	}
-	raw, err := json.MarshalIndent(finding, "", "  ")
+	raw, err := marshalDDJSON(finding)
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
 	return atomicWriteFile(filepath.Join(FindingsDir(p.root, p.name), id.Filename()), raw, 0o600)
 }
 

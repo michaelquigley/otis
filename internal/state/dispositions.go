@@ -2,7 +2,6 @@ package state
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"os"
 	"time"
@@ -17,20 +16,20 @@ const (
 
 // DispositionEvent is one append-only finding lifecycle event.
 type DispositionEvent struct {
-	Type        string    `json:"type"`
-	FindingID   string    `json:"finding_id"`
-	RunID       string    `json:"run_id,omitempty"`
-	Disposition string    `json:"disposition,omitempty"`
-	Actor       string    `json:"actor,omitempty"`
-	Note        string    `json:"note,omitempty"`
-	At          time.Time `json:"at"`
+	Type        string
+	FindingID   string
+	RunID       string `dd:",+omitempty"`
+	Disposition string `dd:",+omitempty"`
+	Actor       string `dd:",+omitempty"`
+	Note        string `dd:",+omitempty"`
+	At          time.Time
 }
 
 type NoteHistoryEntry struct {
-	Disposition string    `json:"disposition"`
-	Note        string    `json:"note"`
-	Actor       string    `json:"actor"`
-	At          time.Time `json:"at"`
+	Disposition string
+	Note        string
+	Actor       string
+	At          time.Time
 }
 
 type ReducedFindingState struct {
@@ -100,11 +99,10 @@ func (p *Project) appendDispositionEventLocked(event DispositionEvent) error {
 			event.Actor = DefaultDispositionActor
 		}
 	}
-	raw, err := json.Marshal(event)
+	raw, err := marshalDDJSONLine(event)
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
 	path := DispositionsPath(p.root, p.name)
 	if err := os.MkdirAll(ProjectDir(p.root, p.name), 0o700); err != nil {
 		return err
@@ -136,7 +134,7 @@ func (p *Project) readDispositionEventsLocked() ([]DispositionEvent, error) {
 			continue
 		}
 		var event DispositionEvent
-		if err := json.Unmarshal(line, &event); err != nil {
+		if err := bindDDJSON(&event, line); err != nil {
 			return nil, err
 		}
 		events = append(events, event)

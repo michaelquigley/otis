@@ -44,6 +44,16 @@ func RemoveWorktree(ctx context.Context, projectPath string, scratchPath string)
 	return nil
 }
 
+func PruneWorktrees(ctx context.Context, projectPath string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", projectPath, "worktree", "prune")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("prune worktrees: %w%s", err, stderrSuffix(stderr.Bytes()))
+	}
+	return nil
+}
+
 func stderrSuffix(raw []byte) string {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {

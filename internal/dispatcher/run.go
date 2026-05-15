@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/michaelquigley/df/dd"
 	"github.com/michaelquigley/otis/internal/bok"
 	"github.com/michaelquigley/otis/internal/config"
 	"github.com/michaelquigley/otis/internal/prompt"
@@ -20,10 +21,13 @@ import (
 
 type RunRequest struct {
 	Config           *config.ResolvedConfig
+	Store            *state.Store
 	ProjectName      string
 	PassName         string
 	ReviewerOverride string
 	DummyOutputPath  string
+	RunID            string
+	GitHead          string
 	Now              time.Time
 }
 
@@ -49,19 +53,31 @@ func Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
 	if req.Now.IsZero() {
 		req.Now = time.Now()
 	}
-	store, err := state.NewStore(req.Config.Global.Storage.StateDir)
-	if err != nil {
-		return RunResult{}, err
+	store := req.Store
+	if store == nil {
+		var err error
+		store, err = state.NewStore(req.Config.Global.Storage.StateDir)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	stateProject := store.Project(req.ProjectName)
 
-	capturedSHA, err := CaptureHEAD(ctx, project.RepoPath)
-	if err != nil {
-		return RunResult{}, err
+	capturedSHA := req.GitHead
+	if capturedSHA == "" {
+		var err error
+		capturedSHA, err = CaptureHEAD(ctx, project.RepoPath)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
-	runID, err := stateProject.AllocateRunID(pass.Name, req.Now)
-	if err != nil {
-		return RunResult{}, err
+	runID := req.RunID
+	if runID == "" {
+		var err error
+		runID, err = stateProject.AllocateRunID(pass.Name, req.Now)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	parsedRunID, err := state.ParseRunID(runID)
 	if err != nil {
@@ -220,11 +236,10 @@ func reviewerModel(global *config.GlobalConfig, pass *config.Pass, kind string) 
 }
 
 func WriteDummyOutput(path string, findings []prompt.ReviewerFinding) error {
-	raw, err := json.MarshalIndent(prompt.ReviewerOutput{Findings: findings}, "", "  ")
+	raw, err := dd.UnbindJSON(prompt.ReviewerOutput{Findings: findings})
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

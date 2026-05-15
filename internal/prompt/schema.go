@@ -5,26 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/michaelquigley/df/dd"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type ReviewerOutput struct {
-	Findings []ReviewerFinding `json:"findings"`
+	Findings []ReviewerFinding
 }
 
 type ReviewerFinding struct {
-	ID           string           `json:"id,omitempty"`
-	Severity     string           `json:"severity"`
-	Title        string           `json:"title"`
-	Location     ReviewerLocation `json:"location"`
-	BokRefs      []string         `json:"bok_refs"`
-	Description  string           `json:"description"`
-	SuggestedFix string           `json:"suggested_fix"`
+	ID           string `dd:",+omitempty"`
+	Severity     string
+	Title        string
+	Location     ReviewerLocation
+	BokRefs      []string
+	Description  string
+	SuggestedFix string
 }
 
 type ReviewerLocation struct {
-	File  string `json:"file"`
-	Lines string `json:"lines"`
+	File  string
+	Lines string
 }
 
 // ReviewerOutputSchema returns the reviewer output schema with a finding cap.
@@ -127,7 +128,7 @@ func ParseReviewerOutput(raw json.RawMessage, schemaRaw json.RawMessage) (Review
 		return ReviewerOutput{}, err
 	}
 	var output ReviewerOutput
-	if err := json.Unmarshal(raw, &output); err != nil {
+	if err := dd.BindJSON(&output, raw); err != nil {
 		return ReviewerOutput{}, fmt.Errorf("parse reviewer output: %w", err)
 	}
 	return output, nil

@@ -33,16 +33,25 @@ func newPassRunCommand(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := dispatcher.Run(cmd.Context(), dispatcher.RunRequest{
-				Config:           cfg,
+			dispatch, err := dispatcher.New(cfg, dispatcher.Options{})
+			if err != nil {
+				return err
+			}
+			handle, err := dispatch.Enqueue(cmd.Context(), dispatcher.EnqueueRequest{
 				ProjectName:      projectName,
 				PassName:         passName,
+				Source:           dispatcher.SourceForce,
 				ReviewerOverride: reviewerOverride,
 				DummyOutputPath:  dummyOutputPath,
 			})
 			if err != nil {
 				return err
 			}
+			dispatched, err := handle.Wait(cmd.Context())
+			if err != nil {
+				return err
+			}
+			result := dispatched.RunResult
 			fmt.Fprintf(cmd.OutOrStdout(), "run: %s\n", result.RunID)
 			fmt.Fprintf(cmd.OutOrStdout(), "report: %s\n", result.RunDir)
 			if result.Noop {

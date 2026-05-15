@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFindingIDParsingAndFilename(t *testing.T) {
@@ -21,6 +22,32 @@ func TestFindingIDParsingAndFilename(t *testing.T) {
 	}
 	if parsed.String() != id.String() {
 		t.Fatalf("round trip = %q", parsed.String())
+	}
+}
+
+func TestAllocateRunStartRecordsLastRun(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	project := store.Project("testproj")
+	at := time.Date(2026, 5, 15, 1, 2, 3, 0, time.UTC)
+	runID, err := project.AllocateRunStart("vocabulary-sweep", at)
+	if err != nil {
+		t.Fatalf("allocate run start: %v", err)
+	}
+	if runID != "testproj/vocabulary-sweep/2026-05-15/010203Z-001" {
+		t.Fatalf("run id = %q", runID)
+	}
+	record, ok, err := project.LastRun("vocabulary-sweep")
+	if err != nil {
+		t.Fatalf("last run: %v", err)
+	}
+	if !ok {
+		t.Fatal("last run missing")
+	}
+	if record.RunID != runID || !record.At.Equal(at) {
+		t.Fatalf("last run record = %+v, want %s at %s", record, runID, at)
 	}
 }
 

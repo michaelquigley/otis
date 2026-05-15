@@ -7,6 +7,8 @@ import (
 const (
 	dispositionsFileName = "dispositions.jsonl"
 	backlogFileName      = "backlog.md"
+	lastRunFileName      = "last-run.json"
+	eventsFileName       = "events.jsonl"
 )
 
 // StateRoot returns the cleaned state directory root.
@@ -52,6 +54,16 @@ func ScratchDir(root string) string {
 // RunScratchDir returns the scratch path for one run id.
 func RunScratchDir(root string, runID string) string {
 	return filepath.Join(ScratchDir(root), filepath.FromSlash(runID))
+}
+
+// LastRunPath returns the per-project last-run state path.
+func LastRunPath(root string, project string) string {
+	return filepath.Join(ProjectDir(root, project), lastRunFileName)
+}
+
+// SupervisorEventsPath returns the supervisor lifecycle event log path.
+func SupervisorEventsPath(root string) string {
+	return filepath.Join(SupervisorDir(root), eventsFileName)
 }
 
 // DispositionsPath returns the append-only disposition event log path.

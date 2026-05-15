@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +57,7 @@ Prefer lens for perspectival surfaces.
 	}
 
 	dummyOutputPath := filepath.Join(dir, "dummy-output.json")
-	raw, err := json.MarshalIndent(prompt.ReviewerOutput{Findings: []prompt.ReviewerFinding{
+	err = dispatcher.WriteDummyOutput(dummyOutputPath, []prompt.ReviewerFinding{
 		{
 			ID:       openFinding.ID,
 			Severity: "medium",
@@ -82,11 +81,8 @@ Prefer lens for perspectival surfaces.
 			Description:  "A new finding should be allocated.",
 			SuggestedFix: "Use lens vocabulary.",
 		},
-	}}, "", "  ")
+	})
 	if err != nil {
-		t.Fatalf("marshal dummy output: %v", err)
-	}
-	if err := os.WriteFile(dummyOutputPath, raw, 0o600); err != nil {
 		t.Fatalf("write dummy output: %v", err)
 	}
 
