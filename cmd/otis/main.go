@@ -47,6 +47,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newServeCommand(&configPath))
 	root.AddCommand(newConfigCommand())
 	root.AddCommand(newFindingsCommand(&configPath))
+	root.AddCommand(newBokCommand())
 	return root
 }
 
