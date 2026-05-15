@@ -3,7 +3,7 @@
 ## Supervisor
 
 `otis serve` loads the resolved config, opens the state store, removes stale
-scratch worktrees, starts the HTTPS API, and runs the scheduler. `otis serve
+scratch worktrees, starts the HTTP(S) API, and runs the scheduler. `otis serve
 --once` runs one scheduler tick and waits for the queued work to complete.
 
 The scheduler checks pass cadence and reviewer windows. Force-runs bypass cadence

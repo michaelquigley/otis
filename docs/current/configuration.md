@@ -7,7 +7,7 @@ configs validate and resolve paths relative to the file that declared them.
 ## Global Config
 
 The global config names the BoK checkout, state directory, prompt byte budgets,
-TLS listener, notifications, reviewer definitions, scheduling windows,
+API listener, notifications, reviewer definitions, scheduling windows,
 concurrency caps, and supervised projects.
 
 Important fields:
@@ -15,7 +15,10 @@ Important fields:
 - `bok.path`: local BoK root.
 - `storage.state_dir`: durable supervisor state.
 - `prompt.per_file_bytes` and `prompt.total_scope_bytes`: inline prompt budget.
-- `api.listen`, `api.tls.cert`, `api.tls.key`: HTTPS supervisor listener.
+- `api.listen`: supervisor API listener.
+- `api.tls.cert`, `api.tls.key`: optional TLS pair. Configure both for direct
+  HTTPS; omit both for HTTP behind a TLS-terminating reverse proxy.
+  Configuring only one of the pair is invalid.
 - `notification.mattermost.url`, `notification.mattermost.token_env`,
   `notification.report_base_url`: optional Mattermost posting.
 - `reviewers.<name>`: `binary`, `default_model`, `concurrency_cap`, `window`,

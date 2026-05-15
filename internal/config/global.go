@@ -55,6 +55,13 @@ type TLSConfig struct {
 	Key  string
 }
 
+func (c *APIConfig) TLSConfigured() bool {
+	return c != nil &&
+		c.TLS != nil &&
+		strings.TrimSpace(c.TLS.Cert) != "" &&
+		strings.TrimSpace(c.TLS.Key) != ""
+}
+
 type NotificationConfig struct {
 	Mattermost    *MattermostConfig
 	ReportBaseURL string `dd:"report_base_url"`
@@ -160,6 +167,19 @@ func (c *GlobalConfig) Validate() error {
 	}
 	if c.Prompt.TotalScopeBytes <= 0 {
 		return errors.New("prompt.total_scope_bytes must be greater than zero")
+	}
+	if c.API == nil {
+		return errors.New("api is required")
+	}
+	if strings.TrimSpace(c.API.Listen) == "" {
+		return errors.New("api.listen is required")
+	}
+	if c.API.TLS != nil {
+		cert := strings.TrimSpace(c.API.TLS.Cert)
+		key := strings.TrimSpace(c.API.TLS.Key)
+		if (cert == "") != (key == "") {
+			return errors.New("api.tls.cert and api.tls.key must be configured together")
+		}
 	}
 	if c.GlobalConcurrencyCap <= 0 {
 		return errors.New("global_concurrency_cap must be greater than zero")

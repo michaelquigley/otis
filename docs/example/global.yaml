@@ -10,9 +10,6 @@ prompt:
 
 api:
   listen: "127.0.0.1:8443"
-  tls:
-    cert: ./tls/cert.pem
-    key: ./tls/key.pem
 
 notification:
   mattermost:

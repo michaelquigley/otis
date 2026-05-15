@@ -29,6 +29,37 @@ func TestLoadComposesExampleConfig(t *testing.T) {
 	if cfg.Global.Prompt.PerFileBytes != DefaultPerFileBytes {
 		t.Fatalf("per file bytes = %d", cfg.Global.Prompt.PerFileBytes)
 	}
+	if cfg.Global.API.TLSConfigured() {
+		t.Fatal("example config should default to HTTP")
+	}
+}
+
+func TestAPITLSConfiguredRequiresCertAndKey(t *testing.T) {
+	if (&APIConfig{TLS: &TLSConfig{}}).TLSConfigured() {
+		t.Fatal("empty TLS config should not enable TLS")
+	}
+	if !(&APIConfig{TLS: &TLSConfig{Cert: "cert.pem", Key: "key.pem"}}).TLSConfigured() {
+		t.Fatal("cert and key should enable TLS")
+	}
+}
+
+func TestGlobalValidateRejectsPartialTLSConfig(t *testing.T) {
+	for name, tls := range map[string]*TLSConfig{
+		"cert-only": {Cert: "cert.pem"},
+		"key-only":  {Key: "key.pem"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := DefaultGlobalConfig()
+			cfg.API.TLS = tls
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), "api.tls.cert and api.tls.key") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }
 
 func TestProjectOverrideMergesInheritedPass(t *testing.T) {

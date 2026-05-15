@@ -2,11 +2,9 @@
 
 Otis is a continuous code-quality agent. A supervisor runs review passes against
 configured repositories, reads a filesystem body of knowledge, stores structured
-findings, and exposes them through HTTPS, CLI commands, and an MCP bridge.
+findings, and exposes them through HTTP(S), CLI commands, and an MCP bridge.
 
-Implemented behavior and operating contracts are summarized in
-[docs/current/](docs/current/). The runnable example lives in
-[docs/example/](docs/example/).
+Implemented behavior and operating contracts are summarized in [docs/current/](docs/current/). The runnable example lives in [docs/example/](docs/example/).
 
 ## Build
 
@@ -27,8 +25,7 @@ go install ./...
 
 ## Demo
 
-The checked-in demo uses the deterministic dummy reviewer so it does not require
-Codex, Claude Code, Pi, or Mattermost credentials.
+The checked-in demo uses the deterministic dummy reviewer so it does not require Codex, Claude Code, Pi, or Mattermost credentials.
 
 Prepare a scratch demo directory:
 
@@ -40,13 +37,6 @@ cp -R docs/example/. "$DEMO"/
 git -C "$DEMO/testproj" init
 git -C "$DEMO/testproj" add .
 git -C "$DEMO/testproj" -c user.name="Otis Demo" -c user.email="otis@example.com" -c commit.gpgsign=false commit -m "seed demo project"
-mkdir -p "$DEMO/tls"
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout "$DEMO/tls/key.pem" \
-  -out "$DEMO/tls/cert.pem" \
-  -days 7 \
-  -subj "/CN=127.0.0.1" \
-  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
 ```
 
 Start the supervisor in one terminal:

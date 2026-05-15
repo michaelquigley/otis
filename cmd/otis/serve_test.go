@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/michaelquigley/otis/internal/config"
 	"github.com/michaelquigley/otis/internal/state"
 )
 
@@ -37,6 +38,18 @@ func TestServeOnceRunsDuePassesAndRecordsLastRun(t *testing.T) {
 	out = runCommand(t, "--config", globalPath, "serve", "--once")
 	if !strings.Contains(out, "enqueued: 0") {
 		t.Fatalf("second serve output = %s", out)
+	}
+}
+
+func TestSupervisorAPISchemeReflectsTLSConfig(t *testing.T) {
+	if got := supervisorAPIScheme(nil); got != "http" {
+		t.Fatalf("nil api scheme = %q, want http", got)
+	}
+	if got := supervisorAPIScheme(&config.APIConfig{TLS: &config.TLSConfig{}}); got != "http" {
+		t.Fatalf("empty tls scheme = %q, want http", got)
+	}
+	if got := supervisorAPIScheme(&config.APIConfig{TLS: &config.TLSConfig{Cert: "cert.pem", Key: "key.pem"}}); got != "https" {
+		t.Fatalf("cert/key scheme = %q, want https", got)
 	}
 }
 

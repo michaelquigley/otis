@@ -1,9 +1,10 @@
 # API, CLI, and MCP
 
-## HTTPS API
+## HTTP(S) API
 
-The supervisor serves HTTPS and requires bearer tokens issued with
-`otis admin token issue`.
+The supervisor serves HTTP unless both `api.tls.cert` and `api.tls.key` are
+configured. When both are configured, it serves HTTPS. All API requests require
+bearer tokens issued with `otis admin token issue`.
 
 Implemented endpoints:
 
@@ -31,7 +32,7 @@ Supervisor-side commands:
 - `otis bok list --bok-path <path>`
 - `otis bok resolve --bok-path <path> --include <csv> --project <name>`
 
-Workstation commands use `--client-config` and call the HTTPS API:
+Workstation commands use `--client-config` and call the supervisor API:
 
 - `otis projects list`
 - `otis passes list --project <project>`
@@ -44,11 +45,14 @@ Workstation commands use `--client-config` and call the HTTPS API:
 Client config is YAML:
 
 ```yaml
-url: https://127.0.0.1:8443
+url: http://127.0.0.1:8443
 token: your-issued-token
-tls:
-  ca_cert: ./tls/cert.pem
 ```
+
+For direct HTTPS with a self-signed certificate, use an `https://` URL and set
+`tls.ca_cert` to the certificate file trusted by the workstation client. For
+reverse-proxy deployments, terminate TLS at the proxy and point the client at
+the proxy URL.
 
 ## MCP
 

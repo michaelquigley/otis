@@ -93,8 +93,8 @@ func runSupervisor(ctx context.Context, cfg *config.ResolvedConfig, handler http
 	}
 	errs := make(chan error, 2)
 	go func() {
-		dl.Infof("api listening on https://%s", cfg.Global.API.Listen)
-		err := server.ListenAndServeTLS(cfg.Global.API.TLS.Cert, cfg.Global.API.TLS.Key)
+		dl.Infof("api listening on %s://%s", supervisorAPIScheme(cfg.Global.API), cfg.Global.API.Listen)
+		err := listenAndServeSupervisorAPI(server, cfg.Global.API)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return
@@ -113,4 +113,18 @@ func runSupervisor(ctx context.Context, cfg *config.ResolvedConfig, handler http
 		_ = server.Shutdown(context.Background())
 		return err
 	}
+}
+
+func supervisorAPIScheme(cfg *config.APIConfig) string {
+	if cfg.TLSConfigured() {
+		return "https"
+	}
+	return "http"
+}
+
+func listenAndServeSupervisorAPI(server *http.Server, cfg *config.APIConfig) error {
+	if cfg.TLSConfigured() {
+		return server.ListenAndServeTLS(cfg.TLS.Cert, cfg.TLS.Key)
+	}
+	return server.ListenAndServe()
 }

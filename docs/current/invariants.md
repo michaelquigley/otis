@@ -116,4 +116,4 @@ written at run completion and served later as stored files. They are not
 re-rendered when a finding's disposition changes.
 
 The supervisor is the only state writer. CLI commands and MCP tools mutate state
-through HTTPS, not by opening the state directory directly.
+through the supervisor API, not by opening the state directory directly.
