@@ -50,6 +50,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newBokCommand())
 	root.AddCommand(newPassCommand(&configPath))
 	root.AddCommand(newAdminCommand(&configPath))
+	root.AddCommand(newMCPCommand())
 	return root
 }
 

@@ -59,30 +59,52 @@ func New(cfg *Config) (*Client, error) {
 }
 
 func (c *Client) DoJSON(ctx context.Context, method string, path string, body any, out any) error {
-	req, err := c.request(ctx, method, path, body)
+	raw, err := c.do(ctx, method, path, body)
 	if err != nil {
 		return err
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(raw)))
 	}
 	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
 		return nil
+	}
+	switch v := out.(type) {
+	case *map[string]any:
+		return json.Unmarshal(raw, v)
+	case *[]map[string]any:
+		return json.Unmarshal(raw, v)
 	}
 	if err := dd.BindJSON(out, raw); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (c *Client) DoText(ctx context.Context, method string, path string, body any) (string, error) {
+	raw, err := c.do(ctx, method, path, body)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func (c *Client) do(ctx context.Context, method string, path string, body any) ([]byte, error) {
+	req, err := c.request(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
 }
 
 func (c *Client) request(ctx context.Context, method string, path string, body any) (*http.Request, error) {

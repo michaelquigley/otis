@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "otis": {
+      "command": "otis",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
