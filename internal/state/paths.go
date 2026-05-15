@@ -44,6 +44,16 @@ func RunDir(root string, project string, pass string, date string, timeSeq strin
 	return filepath.Join(RunsDir(root, project), date, pass, timeSeq)
 }
 
+// ScratchDir returns the root for ephemeral per-run worktrees.
+func ScratchDir(root string) string {
+	return filepath.Join(StateRoot(root), "scratch")
+}
+
+// RunScratchDir returns the scratch path for one run id.
+func RunScratchDir(root string, runID string) string {
+	return filepath.Join(ScratchDir(root), filepath.FromSlash(runID))
+}
+
 // DispositionsPath returns the append-only disposition event log path.
 func DispositionsPath(root string, project string) string {
 	return filepath.Join(ProjectDir(root, project), dispositionsFileName)

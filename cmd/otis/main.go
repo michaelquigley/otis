@@ -48,6 +48,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newConfigCommand())
 	root.AddCommand(newFindingsCommand(&configPath))
 	root.AddCommand(newBokCommand())
+	root.AddCommand(newPassCommand(&configPath))
 	return root
 }
 
