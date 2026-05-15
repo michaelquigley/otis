@@ -40,6 +40,36 @@ type ReducedFindingState struct {
 	Notes       []NoteHistoryEntry
 }
 
+type FindingContext struct {
+	Finding *Finding
+	Notes   []NoteHistoryEntry
+}
+
+// FindingContexts returns findings for a pass with reduced note history.
+func (p *Project) FindingContexts(pass string) ([]FindingContext, error) {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	findings, err := p.listFindingsLocked(FindingFilter{Pass: pass})
+	if err != nil {
+		return nil, err
+	}
+	events, err := p.readDispositionEventsLocked()
+	if err != nil {
+		return nil, err
+	}
+	reduced := reduceDispositionEvents(events)
+	contexts := make([]FindingContext, 0, len(findings))
+	for _, finding := range findings {
+		state := reduced[finding.ID]
+		contexts = append(contexts, FindingContext{
+			Finding: cloneFinding(finding),
+			Notes:   append([]NoteHistoryEntry(nil), state.Notes...),
+		})
+	}
+	return contexts, nil
+}
+
 // ReduceDispositionEvents returns the current event-reduced state.
 func (p *Project) ReduceDispositionEvents() (map[string]ReducedFindingState, error) {
 	p.lock.RLock()
