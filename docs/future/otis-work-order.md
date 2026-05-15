@@ -149,9 +149,9 @@ otis/
     reviewer/
       reviewer.go          # Reviewer interface + Request/Result types
       dummy/dummy.go       # deterministic test reviewer (mirrors mercurius)
-      codex/codex.go       # codex exec adapter (phase 4)
-      claudecode/cc.go     # `claude -p ...` adapter (phase 9)
-      pi/pi.go             # `pi -p ...` adapter (phase 9)
+      codex/codex.go       # codex exec adapter (phase 5)
+      claudecode/cc.go     # `claude -p ...` adapter (phase 10)
+      pi/pi.go             # `pi -p ...` adapter (phase 10)
     prompt/
       prompt.go            # assemble role+goal, BoK slice, project context, scope content, prior findings context, schema+budget
       scope_content.go     # manifest + bounded inline (recent diffs, paths/full body inlining with byte caps)
@@ -166,7 +166,7 @@ otis/
       worktree.go          # git worktree add/remove wrappers; capturedSHA helper
     notify/
       notify.go            # interface
-      mattermost/mm.go     # mattermost poster (phase 9)
+      mattermost/mm.go     # mattermost poster (phase 10)
     api/
       router.go            # stdlib mux; the seven endpoints
       auth.go              # bearer-token file store
@@ -195,7 +195,7 @@ Internal-only packages by convention — only `cmd/` reaches across.
 
 ## Phases
 
-Ten phases. Each phase: state the goal, the files touched, the verification that proves it landed. **Bold** items are the demoable check at phase end. Phase boundaries are commit points where Michael reviews and decides whether to roll forward.
+Eleven phases. Each phase: state the goal, the files touched, the verification that proves it landed. **Bold** items are the demoable check at phase end. Phase boundaries are commit points where Michael reviews and decides whether to roll forward.
 
 ---
 
@@ -229,7 +229,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 - `internal/state/findings.go` — persisted `Finding` struct mirroring spec section "Persisted Finding Schema" exactly, JSON file IO using atomic temp-file-rename (mirror mercurius `monitor.WriteStatus`). Canonical ID is `<project>/<pass>/<NNNN>`; filename joins the components with `--` (so `baab/vocabulary-sweep/0042` ↔ `baab--vocabulary-sweep--0042.json`). The package exposes `ParseID(string) (FindingID, error)`, `ParseFilename(string) (FindingID, error)`, and `(FindingID).Filename() string` so no other call site reimplements the mapping. **`ValidateIDComponent(string) error`** is exported for reuse by the config loader (per Phase 1) and enforces the canonical grammar `^[a-z0-9]+(?:-[a-z0-9]+)*$` for project names and pass slugs; the sequence component is `^[0-9]{4,}$`. Splitting a filename on `--` yields exactly three components — `<project>`, `<pass>`, `<seq>.json` — making the mapping unambiguous regardless of internal dashes. All write methods take the project's write lock.
 - `internal/state/dispositions.go` — append-only `dispositions.jsonl`, event types `finding_created`, `finding_reobserved`, and `disposition_changed`, current-state reducer. Append/reduce both go through the project lock so a reader never sees a half-appended line and two writers can't allocate the same sequence. `finding_reobserved` records that an existing finding was re-surfaced by a later run (carries the run ID); it never changes disposition or any other field on the Finding — its only effect through the reducer is to set `last_run_id`. The reducer also produces the ordered **note history** consumed by `internal/prompt/prompt.go` — every `disposition_changed` event contributes `(disposition_at_event, note_text)` to the finding's history in event order. `finding_created` and `finding_reobserved` do not contribute notes.
 - `internal/state/backlog.go` — render `backlog.md` from open findings; called after every event, under the project write lock so the render reflects the just-appended state.
-- `otis findings list --project X [--open]` and `otis findings show ID` client subcommands wired against a **local** state dir for now (no HTTP yet) so the feature can be exercised before phase 6.
+- `otis findings list --project X [--open]` and `otis findings show ID` client subcommands wired against a **local** state dir for now (no HTTP yet) so the feature can be exercised before phase 7.
 - A unit test that writes a couple of findings + dispositions through the writers, reads them back, asserts state matches.
 
 **Verify.** Unit tests pass. **Hand-emit two findings into a fixture state dir; `otis findings list` shows them; `otis findings show` renders the detail view; `backlog.md` renders correctly; appending an `accepted` disposition event flips the cache and removes the entry from the backlog**.
@@ -250,30 +250,41 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ---
 
-### Phase 4 — Reviewer interface + codex adapter + prompt assembly
+### Phase 4 — Reviewer interface + prompt assembly
 
-**Goal.** A single pass can fire end-to-end against codex, write artifacts, and produce findings — driven by a force-run command. No scheduler yet.
+**Goal.** A reviewer-shaped subprocess can be invoked against a fully-assembled prompt and return validated output. No dispatcher, no persistence, no worktree — just the prompt-and-reviewer subsystem in isolation, exercised by a fixture-driven test harness.
 
 **Lands.**
-- `internal/reviewer/reviewer.go` — `Reviewer` interface (`Review(ctx, Request) (Result, error)`), `Request` carries assembled prompt + schema bytes + working directory + model override, `Result` carries raw output bytes + the parsed findings + the path under `runs/` where artifacts were written.
+- `internal/reviewer/reviewer.go` — `Reviewer` interface (`Review(ctx, Request) (Result, error)`), `Request` carries assembled prompt + schema bytes + working directory + model override, `Result` carries raw output bytes + the parsed findings + the path where artifacts were written.
 - `internal/reviewer/dummy/dummy.go` — deterministic reviewer used by tests; reads canned output from disk; mirrors mercurius's dummy.
-- `internal/reviewer/codex/codex.go` — port mercurius's pattern from `internal/reviewer/codex/codexReviewer.go`. Flags: `codex exec -C <project_dir> --ephemeral --skip-git-repo-check --sandbox read-only --output-schema <schema.json> --output-last-message <last.txt> [-m <model>] [extra_args]`. Prompt via stdin. Ephemeral codex home (mirror `prepareCodexHome()`).
-- `internal/prompt/schema.go` — **reviewer output JSON schema** only (per spec section "Reviewer Output Schema"): the lean shape — optional `id`, required `severity`, `title`, `location`, `bok_refs`, `description`, `suggested_fix`. `top_findings` enforced via `maxItems` on the findings array (mirror mercurius's `schema.ReviewOutputSchemaWithMaxFindings`). Validated via `santhosh-tekuri/jsonschema/v6`. The persisted Finding shape lives in `internal/state/findings.go` (Go struct, not a JSON schema) — the dispatcher's normalize step constructs it from the validated reviewer output plus dispatcher-owned fields.
-- `internal/prompt/prompt.go` — assemble role+goal, BoK slice (the resolved `include` list via `internal/bok/resolve.go` — directory + file-path entries read fresh from disk, deduplicated, project-filtered), project context (non-BoK metadata only: project name, description, primary language from the resolved project config; no BoK content sneaks in through this section), **scope content (manifest + bounded inline)** built by `prompt/scope_content.go`, **prior findings context** (every non-archived finding for the same project+pass with description, location, disposition, and human note — `open`, `accepted`, `deferred`, `rejected` all included; explicit per-disposition handling rules in the prompt copy), output schema + budget. Mirror mercurius's modular layout from `internal/prompt/prompt.go:29–107`.
-- `internal/prompt/scope_content.go` — turns the scope resolver's output (from `dispatcher/scope.go`) into the manifest-plus-inline payload defined in the spec. Always emits the manifest (relative paths) and the project's `git rev-parse HEAD`. Inline rules: for `recent`, the resolver supplies `{files, baseSHA}` (computed via `--first-parent`, see scope.go); per file emit `git -C <project> diff <baseSHA>..HEAD -- <file>`. This module never re-derives the base SHA — it consumes the one the resolver already chose, so manifest and diff are guaranteed to come from the same commit set. For `paths` and `full`, embed file content up to `prompt.per_file_bytes` per file and `prompt.total_scope_bytes` overall, marking truncations and remaining files as manifest-only with a `truncated: N→K bytes` annotation. Both byte caps come from the global config (`internal/config/global.go`); defaults 8 KiB / 256 KiB.
-- `internal/dispatcher/run.go` — one pass execution. **Worktree setup at run start**: capture the project's HEAD (`git -C <project.path> rev-parse HEAD` → `capturedSHA`), assign the run ID (`<project>/<pass>/<YYYY-MM-DD>/<HHMMSSZ>-<NNN>`; the dispatcher claims the `NNN` sequence inside the per-project critical section), then `git -C <project.path> worktree add <state_dir>/scratch/<run_id>/ <capturedSHA>`. The worktree path becomes the working directory for every subsequent operation in this run (scope resolution, file content reads for prompt inlining, the reviewer subprocess's `-C` argument). A `defer` in the goroutine wrapper runs `git -C <project.path> worktree remove <state_dir>/scratch/<run_id>/` regardless of how the run exits. Resolve scope using the worktree path. **Empty-recent short-circuit**: if `scope.project.type == recent` and the resolver returned zero files (empty first-parent selection), skip BoK retrieval, prompt assembly, reviewer invocation, and normalization entirely. Write a minimal run directory: `prompt.md` is a one-line header noting "no commits in window," `output.json` is `{}`, `findings.json` is `[]`, `git-head.txt` carries `capturedSHA`, `report.md` is rendered as a no-op report ("no commits landed on first-parent line in the window"). No `finding_*` events appended. No mattermost message posted. `last-run.json` is already written at dispatch start so cadence advances. Worktree is still removed via the defer. Then return. Otherwise proceed normally: retrieve BoK slice, assemble prompt (with the worktree path as the reviewer's working directory), invoke reviewer, validate output against the **reviewer output schema** (lean shape), **normalize** each reviewer-output entry using the two-branch rule from the spec:
+- `internal/prompt/schema.go` — **reviewer output JSON schema** only (per spec section "Reviewer Output Schema"): the lean shape — optional `id`, required `severity`, `title`, `location`, `bok_refs`, `description`, `suggested_fix`. `top_findings` enforced via `maxItems` on the findings array (mirror mercurius's `schema.ReviewOutputSchemaWithMaxFindings`). Validated via `santhosh-tekuri/jsonschema/v6`. The persisted Finding shape lives in `internal/state/findings.go` (Go struct, not a JSON schema) — the dispatcher's normalize step (Phase 5) constructs it from the validated reviewer output plus dispatcher-owned fields.
+- `internal/prompt/prompt.go` — assemble role+goal, BoK slice (the resolved `include` list via `internal/bok/resolve.go` — directory + file-path entries read fresh from disk, deduplicated, project-filtered), project context (non-BoK metadata only: project name, description, primary language from the resolved project config; no BoK content sneaks in through this section), **scope content (manifest + bounded inline)** built by `prompt/scope_content.go`, **prior findings context** (every non-archived finding for the same project+pass with description, location, disposition, and human note — `open`, `accepted`, `deferred`, `rejected` all included; explicit per-disposition handling rules in the prompt copy; consumes the note-history reducer from Phase 2's `internal/state/dispositions.go`), output schema + budget. Mirror mercurius's modular layout from `internal/prompt/prompt.go:29–107`.
+- `internal/prompt/scope_content.go` — turns the scope resolver's output (from Phase 5's `dispatcher/scope.go` — but the function signature is settled here as `(scopeKind, files []string, baseSHA string, projectPath string) → ScopeContent`) into the manifest-plus-inline payload defined in the spec. Always emits the manifest (relative paths) and the project's `git rev-parse HEAD`. Inline rules: for `recent`, the caller supplies `{files, baseSHA}`; per file emit `git -C <projectPath> diff <baseSHA>..HEAD -- <file>`. This module never re-derives the base SHA — it consumes the one the caller chose, so manifest and diff are guaranteed to come from the same commit set. For `paths` and `full`, embed file content up to `prompt.per_file_bytes` per file and `prompt.total_scope_bytes` overall, marking truncations and remaining files as manifest-only with a `truncated: N→K bytes` annotation. Both byte caps come from the global config (`internal/config/global.go`); defaults 8 KiB / 256 KiB. Tested in Phase 4 with a fixture worktree path; wired to the live dispatcher in Phase 5.
+
+**Verify.** A fixture harness assembles a prompt against a fixture worktree path, a fixture BoK on disk, and a seeded prior-findings context with all four disposition states. **Confirm the assembled prompt contains every section (role+goal, BoK slice, project context, scope content with manifest, prior findings with note history, output schema, budget); the dummy reviewer round-trips a canned response that validates against the schema; bad output (missing required field, extra `severity` value) is rejected with a clear error**.
+
+---
+
+### Phase 5 — Dispatcher run + worktree + codex adapter + force-run
+
+**Goal.** A single pass fires end-to-end against codex (or the dummy reviewer), produces findings, normalizes them into the persisted Finding shape, writes the frozen run artifacts, and cleans up the worktree. Driven by a force-run subcommand. Still no scheduler.
+
+**Lands.**
+- `internal/reviewer/codex/codex.go` — port mercurius's pattern from `internal/reviewer/codex/codexReviewer.go`. Flags: `codex exec -C <project_dir> --ephemeral --skip-git-repo-check --sandbox read-only --output-schema <schema.json> --output-last-message <last.txt> [-m <model>] [extra_args]`. Prompt via stdin. Ephemeral codex home (mirror `prepareCodexHome()`). The `-C` argument is the per-run worktree path, not the upstream clone.
+- `internal/dispatcher/worktree.go` — `CreateWorktree(projectPath, capturedSHA, scratchPath) error` and `RemoveWorktree(projectPath, scratchPath) error` wrappers around `git worktree add/remove`. Plus `CaptureHEAD(projectPath) (string, error)` for `git rev-parse HEAD`.
+- `internal/dispatcher/scope.go` — resolves a pass's `scope.project` into a concrete file set **plus any auxiliary data the prompt assembler needs to stay consistent** (notably the recent-scope base SHA so the manifest and the inline diff cannot diverge). Operates on the worktree path. `full` walks the project tree honoring the project's ignore rules (use `.gitignore` semantics via `go-git` or shell-out to `git ls-files`). `paths` resolves each entry using the three-rule order from the spec: if it `Stat`s as a directory → recursive expansion via the same `git ls-files` call used by `full` rooted at that directory; else if the entry contains any of `*`, `?`, `[` → `filepath.Glob` (or `doublestar.Glob` if `**` support is wanted); else → treat as a single literal file path. `recent` resolves in **one git pass**: `git -C <worktree> log --first-parent --since=<window-start> --pretty=%H HEAD` (newest-first) returns the in-window first-parent commits; if empty, the recent scope is empty (no files, no base SHA — `scope_content.go` produces no diff and `run.go` short-circuits per spec). Otherwise `C_oldest` is the last line. The base SHA is `C_oldest^1` if it has a parent, else the empty-tree SHA `4b825dc642cb6eb9a060e54bf8d69288fbee4904`. The file list is `git diff --name-only <base>..HEAD`. Both the file list and the base SHA are returned to the prompt assembler so `prompt/scope_content.go` (Phase 4) uses the *same* base when emitting per-file diffs — manifest and diff cannot disagree. `window-start = now - scope.project.window` in UTC; the config loader rejects `type: recent` without an explicit `window` field. Uncommitted working-tree changes are intentionally not included (see spec). `full` and `paths` return just `[]string` (no base SHA); `recent` returns `{files []string, baseSHA string}`.
+- `internal/dispatcher/run.go` — one pass execution. **Worktree setup at run start**: `CaptureHEAD(project.path)` → `capturedSHA`, assign the run ID (`<project>/<pass>/<YYYY-MM-DD>/<HHMMSSZ>-<NNN>`; the dispatcher claims the `NNN` sequence inside the per-project critical section), then `CreateWorktree(project.path, capturedSHA, <state_dir>/scratch/<run_id>/)`. The worktree path becomes the working directory for every subsequent operation in this run (scope resolution, file content reads for prompt inlining, the reviewer subprocess's `-C` argument). A `defer` in the goroutine wrapper runs `RemoveWorktree` regardless of how the run exits. Resolve scope using the worktree path. **Empty-recent short-circuit**: if `scope.project.type == recent` and the resolver returned zero files (empty first-parent selection), skip BoK retrieval, prompt assembly, reviewer invocation, and normalization entirely. Write a minimal run directory: `prompt.md` is a one-line header noting "no commits in window," `output.json` is `{}`, `findings.json` is `[]`, `git-head.txt` carries `capturedSHA`, `report.md` is rendered as a no-op report ("no commits landed on first-parent line in the window"). No `finding_*` events appended. No mattermost message posted. `last-run.json` is already written at dispatch start so cadence advances. Worktree is still removed via the defer. Then return. Otherwise proceed normally: retrieve BoK slice, assemble prompt (using Phase 4's `prompt.go`; pass worktree path as the reviewer's working directory), invoke reviewer, validate output against the **reviewer output schema** (lean shape from Phase 4's `schema.go`), **normalize** each reviewer-output entry using the two-branch rule from the spec:
   - **Fresh ID** (reviewer omitted `id` or supplied one that does not match prior-findings context): allocate a new canonical ID, write a new persisted Finding with `created_at = now`, `first_run_id = last_run_id = <current run>`, `disposition: "open"`, append `finding_created` event.
   - **Existing ID** (supplied `id` matches prior-findings context): load the existing Finding, update only `last_run_id`, leave `id` / `created_at` / `first_run_id` / `disposition` untouched, append `finding_reobserved` event.
   
   Then persist run artifacts to `runs/<date>/<pass>/<HHMMSSZ-NNN>/{prompt.md,output.json,findings.json,report.md,git-head.txt}` (output.json is audit-only — the raw reviewer output, unchanged; `findings.json` is the frozen manifest of canonical IDs surfaced by this run with their disposition snapshot at completion time), write/update the persisted Findings into `state/projects/<project>/findings/`, render `report.md` from the persisted Findings *at this moment* and write it once into the run directory (never re-rendered later), render `backlog.md`. The full sequence — normalize, allocate, append events, write files, render — happens inside the per-project write lock so the frozen artifacts and the live state commit together.
-- `internal/dispatcher/scope.go` — resolves a pass's `scope.project` into a concrete file set **plus any auxiliary data the prompt assembler needs to stay consistent** (notably the recent-scope base SHA so the manifest and the inline diff cannot diverge). `full` walks the project tree honoring the project's ignore rules (use `.gitignore` semantics via `go-git` or shell-out to `git ls-files`). `paths` resolves each entry using the three-rule order from the spec: if it `Stat`s as a directory → recursive expansion via the same `git ls-files` call used by `full` rooted at that directory; else if the entry contains any of `*`, `?`, `[` → `filepath.Glob` (or `doublestar.Glob` if `**` support is wanted); else → treat as a single literal file path. `recent` resolves in **one git pass**: `git -C <project> log --first-parent --since=<window-start> --pretty=%H HEAD` (newest-first) returns the in-window first-parent commits; if empty, the recent scope is empty (no files, no base SHA — `scope_content.go` produces no diff and `run.go` short-circuits per C2). Otherwise `C_oldest` is the last line. The base SHA is `C_oldest^1` if it has a parent, else the empty-tree SHA `4b825dc642cb6eb9a060e54bf8d69288fbee4904`. The file list is `git diff --name-only <base>..HEAD`. Both the file list and the base SHA are returned to the prompt assembler so `prompt/scope_content.go` uses the *same* base when emitting per-file diffs — manifest and diff cannot disagree. `window-start = now - scope.project.window` in UTC; the config loader rejects `type: recent` without an explicit `window` field. Uncommitted working-tree changes are intentionally not included (see spec). `full` and `paths` return just `[]string` (no base SHA); `recent` returns `{files []string, baseSHA string}`.
-- `otis pass run <project>/<pass>` subcommand for force-runs.
+- `otis pass run <project>/<pass>` subcommand for force-runs. Force-runs read the resolved config once at invocation time (no dispatcher loop yet); load the global config, resolve the named project's composed config, fire `run.go` synchronously, exit with the run-ID printed.
 
-**Verify.** Configure a tiny test project with a `vocabulary-sweep` pass scoped to `paths: ["sample/"]`. Run `otis pass run testproj/vocabulary-sweep --reviewer dummy`. **Confirm `runs/.../prompt.md` contains the BoK slice and the prior findings context (with all four disposition states represented when seeded — open, accepted, deferred, rejected); `output.json` validates against the schema; new finding JSON files land under `findings/`; `dispositions.jsonl` grows; `backlog.md` renders**. Then run again with `--reviewer codex` against a local codex install to confirm the live adapter works.
+**Verify.** Configure a tiny test project with a `vocabulary-sweep` pass scoped to `paths: ["sample/"]`. Run `otis pass run testproj/vocabulary-sweep --reviewer dummy`. **Confirm a fresh worktree is created at `<state_dir>/scratch/<run_id>/`, scope and prompt are resolved against it, `runs/.../prompt.md` contains the BoK slice and the prior findings context (with all four disposition states represented when seeded — open, accepted, deferred, rejected); `output.json` validates against the schema; new finding JSON files land under `findings/`; `dispositions.jsonl` grows; `backlog.md` renders; the worktree is removed at run end**. Then run again with `--reviewer codex` against a local codex install to confirm the live adapter works. Force-fire an empty-`recent` pass and confirm the no-op artifacts.
 
 ---
 
-### Phase 5 — Scheduler, windows, concurrency caps
+### Phase 6 — Scheduler, windows, concurrency caps
 
 **Goal.** Supervisor loop fires due passes inside their window, respecting per-reviewer and global caps. Cadence honored across restarts.
 
@@ -290,17 +301,17 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ---
 
-### Phase 6 — HTTPS REST API + bearer auth + workstation client foundation
+### Phase 7 — HTTPS REST API + bearer auth + workstation client foundation
 
-**Goal.** The endpoints in spec section 8.1 work; auth gates them; clients can be remote. Workstation client foundation (config loader + authed HTTP client) lands here so Phase 7's MCP bridge can use it.
+**Goal.** The endpoints in spec section 8.1 work; auth gates them; clients can be remote. Workstation client foundation (config loader + authed HTTP client) lands here so Phase 8's MCP bridge can use it.
 
 **Lands.**
 - `internal/api/auth.go` — token store loaded from `<state_dir>/tokens/` (one file per token; optional label inside; mtime is rotation signal). `Authorize(r *http.Request) (label, ok)`.
 - `internal/api/router.go` — stdlib `net/http` + `http.ServeMux` (Go 1.22+ method-aware patterns). No new dependency.
-- `internal/client/config.go` — workstation config loader for `~/.config/otis/config.yaml` (supervisor URL + bearer token), `dd`-bound with the same defaults/validate/resolve shape as the server configs. Used by both Phase 7 (MCP bridge) and Phase 8 (CLI commands).
+- `internal/client/config.go` — workstation config loader for `~/.config/otis/config.yaml` (supervisor URL + bearer token), `dd`-bound with the same defaults/validate/resolve shape as the server configs. Used by both Phase 8 (MCP bridge) and Phase 9 (CLI commands).
 - `internal/client/http.go` — small authed `http.Client` wrapper that adds the bearer token to every request, handles TLS (trusts the supervisor's self-signed cert when configured), and unmarshals JSON responses. One shared dependency for every client subcommand and the MCP bridge.
 - `internal/api/handlers.go` — the seven endpoints from spec section 8.1. The runs-report endpoint shape is `GET /projects/{project}/runs/{pass}/{date}/{time_seq}/report` (matches the run-ID layout); finding endpoints split the canonical ID across path segments — `GET /projects/{project}/findings/{pass}/{seq}` and the disposition POST under the same prefix. The path-segment split is what makes both IDs URL-safe without percent-encoding.
-- `internal/api/render.go` — the **rendering function** used at run-completion to produce `report.md` from a snapshot of persisted Findings + the run manifest. Called once by `internal/dispatcher/run.go` inside the project write lock; not called by the API. The runs-report endpoint serves the stored `report.md` file directly (no re-render). Raw `output.json` stays in `runs/.../` as audit only and is never the source of truth for what a human or downstream agent reads. Mattermost links (Phase 9) point at the stored markdown via the API endpoint.
+- `internal/api/render.go` — the **rendering function** used at run-completion to produce `report.md` from a snapshot of persisted Findings + the run manifest. Called once by `internal/dispatcher/run.go` inside the project write lock; not called by the API. The runs-report endpoint serves the stored `report.md` file directly (no re-render). Raw `output.json` stays in `runs/.../` as audit only and is never the source of truth for what a human or downstream agent reads. Mattermost links (Phase 10) point at the stored markdown via the API endpoint.
 - TLS: serve over TLS using a key/cert pair from the global config (`api.tls.cert`, `api.tls.key`); self-signed acceptable for HQ network.
 - `otis admin token issue [--label X]` subcommand — generates a random 32-byte token, writes it to the store, prints it once.
 
@@ -308,26 +319,26 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ---
 
-### Phase 7 — MCP server
+### Phase 8 — MCP server
 
 **Goal.** Digital clients reach the same surface through MCP.
 
 **Lands.**
-- `internal/mcp/bridge.go` — `otis mcp` runs as a **stdio bridge**, not as a second supervisor. It speaks MCP to the workstation's MCP client on stdin/stdout and forwards each tool invocation as an authenticated HTTPS request to the running supervisor via the shared `internal/client/{config,http}.go` foundation that landed in Phase 6 — the same code path the `otis findings list / show / accept / defer / reject` CLI commands will use in Phase 8. **The bridge never opens the state store directly; the supervisor process remains the sole writer**, so the per-project locks from Phase 2 / cross-cutting concerns still hold across any number of MCP clients on any number of workstations.
+- `internal/mcp/bridge.go` — `otis mcp` runs as a **stdio bridge**, not as a second supervisor. It speaks MCP to the workstation's MCP client on stdin/stdout and forwards each tool invocation as an authenticated HTTPS request to the running supervisor via the shared `internal/client/{config,http}.go` foundation that landed in Phase 7 — the same code path the `otis findings list / show / accept / defer / reject` CLI commands will use in Phase 9. **The bridge never opens the state store directly; the supervisor process remains the sole writer**, so the per-project locks from Phase 2 / cross-cutting concerns still hold across any number of MCP clients on any number of workstations.
 - `internal/mcp/tools.go` — four tools registered via `modelcontextprotocol/go-sdk`: `otis_list_findings`, `otis_get_finding`, `otis_get_report`, `otis_disposition_finding`. Each tool's handler is a small wrapper that builds the matching REST request, sends it through the workstation's authenticated HTTP client, and translates the response back into MCP shape.
-- `otis mcp` subcommand wires the bridge to the standard input/output. The supervisor's own HTTPS endpoints (built in Phase 6) are the source of truth; no MCP listener runs inside `otis serve` in the minimal harness.
+- `otis mcp` subcommand wires the bridge to the standard input/output. The supervisor's own HTTPS endpoints (built in Phase 7) are the source of truth; no MCP listener runs inside `otis serve` in the minimal harness.
 - Workstation MCP-client config example shipped as `docs/example/mcp.json`.
 
 **Verify.** Configure Claude Code in this repo to point at `otis mcp`. **From a Claude Code session, call `otis_list_findings` with `{"project": "testproj", "disposition": "open"}` and walk through scenario three in the spec end-to-end**.
 
 ---
 
-### Phase 8 — Workstation CLI client (full set)
+### Phase 9 — Workstation CLI client (full set)
 
 **Goal.** The full `otis` CLI from spec section 8.2 works against the remote supervisor.
 
 **Lands.**
-- Client subcommands built on the Phase 6 foundation (`internal/client/{config,http}.go`): `otis findings list`, `otis findings show`, `otis accept`, `otis defer`, `otis reject`, `otis report show <run-id>` (run ID is `<project>/<pass>/<date>/<time_seq>`), `otis projects list`, `otis passes list`, `otis pass run`.
+- Client subcommands built on the Phase 7 foundation (`internal/client/{config,http}.go`): `otis findings list`, `otis findings show`, `otis accept`, `otis defer`, `otis reject`, `otis report show <run-id>` (run ID is `<project>/<pass>/<date>/<time_seq>`), `otis projects list`, `otis passes list`, `otis pass run`.
 - Same binary as the server (mode is determined by subcommand).
 - Pretty-print findings using a small markdown→terminal renderer (or just plain text; whichever is cheaper).
 
@@ -335,7 +346,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ---
 
-### Phase 9 — Notification + remaining reviewer adapters
+### Phase 10 — Notification + remaining reviewer adapters
 
 **Goal.** Mattermost posting on non-empty runs; claude-code and pi reviewers usable in passes.
 
@@ -351,7 +362,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ---
 
-### Phase 10 — End-to-end demo, seed BoK, doc migration
+### Phase 11 — End-to-end demo, seed BoK, doc migration
 
 **Goal.** Move from buildable to demoable, with a story Michael can run on his workstation.
 
@@ -367,7 +378,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ## Cross-Cutting Concerns Spelled Out
 
-**Sexton handshake.** Otis never syncs or pulls supervised repos — sexton owns that. Otis does invoke local git commands against each project's clone: `rev-parse HEAD` to capture the SHA at run start, `worktree add/remove` per run, and `worktree prune` at supervisor startup. The global config lists project paths; the supervisor reads them as-is. If a path is missing, log a warning and skip that project's passes. The spec is explicit: "fail loud, keep running." Sexton's "watching" state is the implicit handshake — we do not poll it, we just trust that sexton's last sync delivered a reasonable object database. The captured-SHA + worktree mechanism (see Phase 4 and spec "Repository Management") is what makes `git-head.txt` an exact audit-trail commitment regardless of what sexton does to the upstream mid-run.
+**Sexton handshake.** Otis never syncs or pulls supervised repos — sexton owns that. Otis does invoke local git commands against each project's clone: `rev-parse HEAD` to capture the SHA at run start, `worktree add/remove` per run, and `worktree prune` at supervisor startup. The global config lists project paths; the supervisor reads them as-is. If a path is missing, log a warning and skip that project's passes. The spec is explicit: "fail loud, keep running." Sexton's "watching" state is the implicit handshake — we do not poll it, we just trust that sexton's last sync delivered a reasonable object database. The captured-SHA + worktree mechanism (see Phase 5 and spec "Repository Management") is what makes `git-head.txt` an exact audit-trail commitment regardless of what sexton does to the upstream mid-run.
 
 **Cross-run finding identity.** No content-hash dedupe in the minimal harness (deferred per spec). The mechanism is the **prior findings context** in the prompt (spec section "Reviewer Interface" item 5): every non-archived finding for the same `(project, pass)` is included with its description, location, current disposition, and human note. The prompt copy tells the reviewer how to read each state — reference the existing ID for `open` reoccurrences, do not re-surface `accepted` / `deferred` / `rejected` items unless the code shows the basis has changed. The codex adapter tests exercise all four disposition states.
 
@@ -381,11 +392,11 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 **Logging.** Global `dl.Log()` by default (no preemptive per-subsystem channels — that's not the practice convention). Per-call structured fields via `.With("project", p).With("pass", n)` chains. `--verbose` flips the level to debug via cobra `PersistentPreRun`. Channels introduced lazily if a subsystem ever needs separate output routing.
 
-**Configuration reload.** Mercurius re-reads calibration fields per session. Otis follows the same discipline: when the scheduler ticks, it re-reads the global config (cheap) and every project's `otis.yaml` (cheap and cached by mtime). Operators edit YAML in place; the next tick picks up the change. A `SIGHUP` handler that drops caches is a nice-to-have, not load-bearing for phase 5.
+**Configuration reload.** Mercurius re-reads calibration fields per session. Otis follows the same discipline: at every scheduler tick the supervisor re-resolves each project's composed config — that means re-reading the global config (cheap, mtime-cached), the per-project `otis.yaml`, **and any shared profiles the project's `include_configs` list pulls in from the BoK root**. So editing `<bok.path>/standard.yaml` and waiting one tick is enough; no restart required. The same path catches sexton-landed BoK content updates implicitly because the BoK is read from disk per-pass (there is no index to invalidate). A `SIGHUP` handler that forces an immediate reload is a nice-to-have, not load-bearing for phase 6.
 
 ## Risks & Watch-Items
 
-- **Pi adapter is the unknown.** Pi's CLI conventions are not as nailed down as codex's. Phase 9 may surface adapter-shape questions that bubble back to the `Reviewer` interface. Acceptable risk — defer until phase 9, treat as discovery.
+- **Pi adapter is the unknown.** Pi's CLI conventions are not as nailed down as codex's. Phase 10 may surface adapter-shape questions that bubble back to the `Reviewer` interface. Acceptable risk — defer until phase 10, treat as discovery.
 - **MCP SDK churn.** `modelcontextprotocol/go-sdk` is recent. Pinning a specific version (matching mercurius's pin where possible) keeps surprises manageable.
 - **JSON-schema strictness vs reviewer compliance.** Mercurius's bug fixes for reviewer output drift are valuable prior art; mirror them rather than rediscover. Watch `internal/schema/reviewOutput.go` in mercurius for any patterns worth porting.
 
@@ -408,7 +419,7 @@ Ten phases. Each phase: state the goal, the files touched, the verification that
 
 ## Verification (End-to-End)
 
-Once phase 10 lands, the following sequence should work cold:
+Once phase 11 lands, the following sequence should work cold:
 
 1. `otis serve --config docs/example/global.yaml &` — supervisor starts; scheduler quiet because cadences haven't elapsed.
 2. `otis admin token issue --label workstation` — print a token; copy into `~/.config/otis/config.yaml`.
