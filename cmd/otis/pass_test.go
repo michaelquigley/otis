@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,9 +89,30 @@ Prefer lens for perspectival surfaces.
 		t.Fatalf("write dummy output: %v", err)
 	}
 
+	var mattermostPosts []map[string]any
+	var mattermostPath string
+	mattermostServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mattermostPath = r.URL.Path
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode mattermost payload: %v", err)
+		}
+		mattermostPosts = append(mattermostPosts, payload)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer mattermostServer.Close()
+	t.Setenv("OTIS_MATTERMOST_TOKEN", "test-token")
+
 	cfg, err := config.Load(filepath.Join(dir, "global.yaml"))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
+	}
+	cfg.Global.Notification = &config.NotificationConfig{
+		Mattermost: &config.MattermostConfig{
+			URL:      mattermostServer.URL + "/hooks",
+			TokenEnv: "OTIS_MATTERMOST_TOKEN",
+		},
+		ReportBaseURL: "https://otis.example.com",
 	}
 	result, err := dispatcher.Run(context.Background(), dispatcher.RunRequest{
 		Config:           cfg,
@@ -161,6 +185,18 @@ Prefer lens for perspectival surfaces.
 	if !strings.Contains(events, state.EventFindingReobserved) || !strings.Contains(events, state.EventFindingCreated) {
 		t.Fatalf("expected reobserved and created events:\n%s", events)
 	}
+	if mattermostPath != "/hooks/test-token" {
+		t.Fatalf("mattermost path = %q", mattermostPath)
+	}
+	if len(mattermostPosts) != 1 {
+		t.Fatalf("mattermost posts = %d, want 1", len(mattermostPosts))
+	}
+	text, _ := mattermostPosts[0]["text"].(string)
+	for _, want := range []string{"otis: testproj vocabulary-sweep", "2 findings", "Full report: https://otis.example.com/api/v1/projects/testproj/runs/", "Triage: otis accept"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("mattermost text missing %q:\n%s", want, text)
+		}
+	}
 }
 
 func TestPassRunEmptyRecentWritesNoopArtifacts(t *testing.T) {
@@ -203,6 +239,55 @@ func TestPassRunEmptyRecentWritesNoopArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(state.RunScratchDir(filepath.Join(dir, "state"), result.RunID)); !os.IsNotExist(err) {
 		t.Fatalf("scratch worktree still exists or stat failed: %v", err)
+	}
+}
+
+func TestPassRunReviewerDryRunsWriteReports(t *testing.T) {
+	for _, kind := range []string{"codex", "claude-code", "pi"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			repoPath := filepath.Join(dir, "repo")
+			initPassTestRepo(t, repoPath)
+			writeTestFile(t, filepath.Join(repoPath, "sample", "main.go"), "package sample\n")
+			gitPass(t, repoPath, "add", ".")
+			gitPass(t, repoPath, "-c", "user.name=Otis Test", "-c", "user.email=otis@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial")
+			writePhase5Config(t, dir)
+			writeTestFile(t, filepath.Join(dir, "bok", "vocabulary", "lens-vs-view.md"), "---\ntitle: lens\n---\n\nbody\n")
+
+			cfg, err := config.Load(filepath.Join(dir, "global.yaml"))
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+			cfg.Global.Reviewers[kind] = &config.ReviewerConfig{
+				Binary:         "missing-" + kind,
+				ConcurrencyCap: 1,
+				Window:         "anytime",
+				DryRun:         true,
+			}
+			cfg.Projects["testproj"].Passes[0].Reviewer.Kind = kind
+			result, err := dispatcher.Run(context.Background(), dispatcher.RunRequest{
+				Config:      cfg,
+				ProjectName: "testproj",
+				PassName:    "vocabulary-sweep",
+			})
+			if err != nil {
+				t.Fatalf("run %s: %v", kind, err)
+			}
+			if result.Noop {
+				t.Fatal("dry-run reviewer should produce a normal zero-finding run, not a no-op recent run")
+			}
+			parsed, err := state.ParseRunID(result.RunID)
+			if err != nil {
+				t.Fatalf("parse run: %v", err)
+			}
+			runDir := state.RunDir(filepath.Join(dir, "state"), parsed.Project, parsed.Pass, parsed.Date, parsed.TimeSeq)
+			if !strings.Contains(readString(t, filepath.Join(runDir, "report.md")), "Otis Run Report") {
+				t.Fatalf("report missing for %s", kind)
+			}
+			if !strings.Contains(readString(t, filepath.Join(runDir, "output.json")), `"findings"`) {
+				t.Fatalf("output.json should be dry-run empty output for %s", kind)
+			}
+		})
 	}
 }
 

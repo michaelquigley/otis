@@ -1,6 +1,13 @@
 package codex
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/michaelquigley/otis/internal/prompt"
+	"github.com/michaelquigley/otis/internal/reviewer"
+)
 
 func TestExtractReviewOutput(t *testing.T) {
 	tests := []struct {
@@ -61,5 +68,20 @@ func TestExtractReviewOutput(t *testing.T) {
 				t.Fatalf("output mismatch: got %s want %s", got, test.want)
 			}
 		})
+	}
+}
+
+func TestDryRun(t *testing.T) {
+	r := New(Options{BinaryPath: "missing-codex", DryRun: true})
+	result, err := r.Review(context.Background(), reviewer.Request{
+		Prompt:     "review this",
+		Schema:     prompt.ReviewerOutputSchema(3),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if !strings.Contains(result.UsageNotes, "dry_run='true'") {
+		t.Fatalf("usage notes = %q", result.UsageNotes)
 	}
 }

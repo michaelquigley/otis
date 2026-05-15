@@ -70,6 +70,7 @@ type ReviewerConfig struct {
 	DefaultModel   string
 	ConcurrencyCap int
 	Window         string
+	DryRun         bool `dd:",+omitempty"`
 }
 
 type WindowConfig struct {
@@ -100,7 +101,9 @@ func DefaultGlobalConfig() *GlobalConfig {
 			TLS:    &TLSConfig{},
 		},
 		Notification: &NotificationConfig{
-			Mattermost: &MattermostConfig{},
+			Mattermost: &MattermostConfig{
+				TokenEnv: "MATTERMOST_TOKEN",
+			},
 		},
 		Reviewers: map[string]*ReviewerConfig{
 			"codex": {

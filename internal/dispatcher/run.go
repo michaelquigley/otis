@@ -4,18 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/michaelquigley/df/dd"
+	"github.com/michaelquigley/df/dl"
 	"github.com/michaelquigley/otis/internal/bok"
 	"github.com/michaelquigley/otis/internal/config"
+	"github.com/michaelquigley/otis/internal/notify"
+	"github.com/michaelquigley/otis/internal/notify/mattermost"
 	"github.com/michaelquigley/otis/internal/prompt"
 	"github.com/michaelquigley/otis/internal/reviewer"
+	"github.com/michaelquigley/otis/internal/reviewer/claudecode"
 	"github.com/michaelquigley/otis/internal/reviewer/codex"
 	"github.com/michaelquigley/otis/internal/reviewer/dummy"
+	"github.com/michaelquigley/otis/internal/reviewer/pi"
 	"github.com/michaelquigley/otis/internal/state"
 )
 
@@ -190,6 +196,9 @@ func Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
 		return result, err
 	}
 	result.Findings = persisted
+	if err := postRunNotification(ctx, req.Config.Global, project, runID, persisted); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
@@ -217,12 +226,90 @@ func buildReviewer(global *config.GlobalConfig, pass *config.Pass, kind string, 
 		return codex.New(codex.Options{
 			BinaryPath: cfg.Binary,
 			Model:      reviewerModel(global, pass, kind),
+			DryRun:     cfg.DryRun,
 		}), "codex", nil
+	case "claude-code":
+		cfg := global.Reviewers["claude-code"]
+		if cfg == nil {
+			return nil, "", fmt.Errorf("reviewer %q is not configured", kind)
+		}
+		return claudecode.New(claudecode.Options{
+			BinaryPath: cfg.Binary,
+			Model:      reviewerModel(global, pass, kind),
+			DryRun:     cfg.DryRun,
+		}), "claude-code", nil
+	case "pi":
+		cfg := global.Reviewers["pi"]
+		if cfg == nil {
+			return nil, "", fmt.Errorf("reviewer %q is not configured", kind)
+		}
+		return pi.New(pi.Options{
+			BinaryPath: cfg.Binary,
+			Model:      reviewerModel(global, pass, kind),
+			DryRun:     cfg.DryRun,
+		}), "pi", nil
 	case "":
 		return nil, "", fmt.Errorf("reviewer is required")
 	default:
-		return nil, "", fmt.Errorf("reviewer %q is not implemented in this phase", kind)
+		return nil, "", fmt.Errorf("reviewer %q is not configured", kind)
 	}
+}
+
+func postRunNotification(ctx context.Context, global *config.GlobalConfig, project *config.ResolvedProject, runIDValue string, findings []*state.Finding) error {
+	if len(findings) == 0 || global == nil || global.Notification == nil || global.Notification.Mattermost == nil {
+		return nil
+	}
+	runID, err := state.ParseRunID(runIDValue)
+	if err != nil {
+		return err
+	}
+	mm := global.Notification.Mattermost
+	if strings.TrimSpace(mm.URL) == "" {
+		return nil
+	}
+	notifier := mattermost.New(mattermost.Options{
+		URL:      mm.URL,
+		TokenEnv: mm.TokenEnv,
+	})
+	return notifier.Post(ctx, notify.Notification{
+		Project:   runID.Project,
+		Pass:      runID.Pass,
+		RunID:     runID.String(),
+		Date:      runID.Date,
+		Channel:   notificationChannel(runID.Project, project),
+		ReportURL: reportURL(global, runID),
+		Findings:  findings,
+	})
+}
+
+func notificationChannel(projectName string, project *config.ResolvedProject) string {
+	if project != nil && project.Project != nil && project.Project.Notify != nil {
+		if channel := strings.TrimSpace(project.Project.Notify.Mattermost); channel != "" {
+			return channel
+		}
+	}
+	return "#otis-" + projectName
+}
+
+func reportURL(global *config.GlobalConfig, runID state.RunID) string {
+	base := ""
+	if global != nil && global.Notification != nil {
+		base = strings.TrimRight(strings.TrimSpace(global.Notification.ReportBaseURL), "/")
+	}
+	if base == "" {
+		listen := "127.0.0.1:8443"
+		if global != nil && global.API != nil && strings.TrimSpace(global.API.Listen) != "" {
+			listen = strings.TrimSpace(global.API.Listen)
+		}
+		base = "https://" + listen
+		dl.Warnf("notification.report_base_url is empty; using %s; links may not resolve externally", base)
+	}
+	return fmt.Sprintf("%s/api/v1/projects/%s/runs/%s/%s/%s/report",
+		base,
+		url.PathEscape(runID.Project),
+		url.PathEscape(runID.Pass),
+		url.PathEscape(runID.Date),
+		url.PathEscape(runID.TimeSeq))
 }
 
 func reviewerModel(global *config.GlobalConfig, pass *config.Pass, kind string) string {

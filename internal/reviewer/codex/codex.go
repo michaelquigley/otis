@@ -20,6 +20,7 @@ const defaultBinaryPath = "codex"
 type Options struct {
 	BinaryPath string
 	Model      string
+	DryRun     bool
 	ExtraArgs  []string
 }
 
@@ -45,6 +46,10 @@ func (r *Reviewer) Review(ctx context.Context, req reviewer.Request) (reviewer.R
 	}
 	if len(req.Schema) == 0 {
 		return reviewer.Result{}, errors.New("codex reviewer schema is required")
+	}
+	if r.options.DryRun {
+		args := r.args(req.WorkingDir, "<schema.json>", "<last-message.json>", req.Model)
+		return reviewer.DryRunResult(req.Schema, "dry_run='true', command='"+reviewer.CommandLine(r.options.BinaryPath, displayArgs(args))+"'")
 	}
 
 	tempDir, err := os.MkdirTemp("", "otis-codex-*")
@@ -170,6 +175,19 @@ func (r *Reviewer) usageNotes(stdout []byte, stderr []byte, model string, recove
 		parts = append(parts, "recovered_last_message_after_error='true'")
 	}
 	return strings.Join(parts, ", ")
+}
+
+func displayArgs(args []string) []string {
+	out := append([]string(nil), args...)
+	for i := 0; i < len(out); i++ {
+		switch out[i] {
+		case "--output-schema", "--output-last-message":
+			if i+1 < len(out) {
+				out[i+1] = "<" + strings.TrimPrefix(out[i], "--output-") + ">"
+			}
+		}
+	}
+	return out
 }
 
 func codexHome() (string, error) {

@@ -14,10 +14,26 @@ api:
     cert: ./tls/cert.pem
     key: ./tls/key.pem
 
+notification:
+  mattermost:
+    url: https://mattermost.example.com/hooks
+    token_env: MATTERMOST_TOKEN
+  report_base_url: https://otis.example.com
+
 reviewers:
   codex:
     binary: codex
     default_model: gpt-5.4
+    concurrency_cap: 1
+    window: anytime
+  claude-code:
+    binary: claude
+    default_model: opus-4.7
+    concurrency_cap: 1
+    window: anytime
+  pi:
+    binary: pi
+    default_model: ollama/llama3.3
     concurrency_cap: 1
     window: anytime
 
