@@ -1,0 +1,32 @@
+bok:
+  path: ./bok
+
+storage:
+  state_dir: ./.state
+
+prompt:
+  per_file_bytes: 8192
+  total_scope_bytes: 262144
+
+api:
+  listen: "127.0.0.1:8443"
+  tls:
+    cert: ./tls/cert.pem
+    key: ./tls/key.pem
+
+reviewers:
+  codex:
+    binary: codex
+    default_model: gpt-5.4
+    concurrency_cap: 1
+    window: anytime
+
+windows:
+  anytime:
+    hours: "00:00-24:00"
+
+global_concurrency_cap: 1
+
+projects:
+  - name: testproj
+    path: ./testproj

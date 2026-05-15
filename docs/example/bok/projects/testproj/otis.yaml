@@ -1,0 +1,14 @@
+include_configs:
+  - standard
+
+project:
+  name: testproj
+  description: small demonstration project for the Otis harness
+  primary_language: go
+  notify:
+    mattermost: "#otis-testproj"
+  top_findings: 2
+
+passes:
+  - name: vocabulary-sweep
+    top_findings: 2

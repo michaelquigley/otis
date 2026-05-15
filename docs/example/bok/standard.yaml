@@ -1,0 +1,13 @@
+passes:
+  - name: vocabulary-sweep
+    description: cross-module naming consistency
+    scope:
+      project:
+        type: full
+      bok:
+        include:
+          - vocabulary/
+    reviewer:
+      kind: codex
+    cadence: 24h
+    top_findings: 3

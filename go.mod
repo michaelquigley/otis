@@ -1,3 +1,14 @@
 module github.com/michaelquigley/otis
 
 go 1.26.2
+
+require (
+	github.com/michaelquigley/df v0.3.14
+	github.com/spf13/cobra v1.10.2
+)
+
+require (
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
