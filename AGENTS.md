@@ -1,6 +1,7 @@
 # Otis
 
-Otis is being built phase-by-phase from `docs/future/otis-work-order.md`, with `docs/future/otis-spec.md` as the behavioral contract. Stop at each phase boundary for human review and manual commit before continuing.
+Otis is a continuous code-quality agent. The Phase 1-11 work order is complete;
+current behavior and operating contracts live in `docs/current/`.
 
 ## Current Implementation Rules
 
@@ -14,6 +15,6 @@ Otis is being built phase-by-phase from `docs/future/otis-work-order.md`, with `
 
 ## Documentation
 
-- `docs/future/` contains planned behavior.
-- `docs/current/` should describe only implemented behavior once later phases create it.
-- Keep `README.md` concise and point to the design/work-order documents.
+- `docs/current/` describes implemented behavior and durable operating contracts.
+- `docs/example/` contains the runnable demo BoK, project, and config.
+- Keep `README.md` concise and point to current docs and the demo.

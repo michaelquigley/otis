@@ -4,9 +4,9 @@ Otis is a continuous code-quality agent. A supervisor runs review passes against
 configured repositories, reads a filesystem body of knowledge, stores structured
 findings, and exposes them through HTTPS, CLI commands, and an MCP bridge.
 
-The full design still lives in [docs/future/otis-spec.md](docs/future/otis-spec.md).
-Implemented behavior is summarized in [docs/current/](docs/current/). The phased
-build order is [docs/future/otis-work-order.md](docs/future/otis-work-order.md).
+Implemented behavior and operating contracts are summarized in
+[docs/current/](docs/current/). The runnable example lives in
+[docs/example/](docs/example/).
 
 ## Build
 
