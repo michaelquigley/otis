@@ -18,6 +18,13 @@ make test
 `make build` runs `go install $(TARGETS)`. `make test` runs `go vet ./...` and
 `go test ./... -count=1`.
 
+For the walkthrough below, install the CLI once and make sure your Go install
+directory is on `PATH`:
+
+```bash
+go install ./...
+```
+
 ## Demo
 
 The checked-in demo uses the deterministic dummy reviewer so it does not require
@@ -45,22 +52,22 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 Start the supervisor in one terminal:
 
 ```bash
-go run ./cmd/otis --config "$DEMO/global.yaml" serve
+otis --config "$DEMO/global.yaml" serve
 ```
 
 In another terminal, issue a workstation token and write a client config:
 
 ```bash
-TOKEN=$(go run ./cmd/otis --config "$DEMO/global.yaml" admin token issue --label demo)
+TOKEN=$(otis --config "$DEMO/global.yaml" admin token issue --label demo)
 sed "s/replace-with-admin-token/$TOKEN/" "$DEMO/client.yaml.example" > "$DEMO/client.yaml"
 ```
 
 Force one pass and inspect the resulting finding:
 
 ```bash
-go run ./cmd/otis --client-config "$DEMO/client.yaml" pass run testproj/vocabulary-sweep
+otis --client-config "$DEMO/client.yaml" pass run testproj/vocabulary-sweep
 sleep 2
-go run ./cmd/otis --client-config "$DEMO/client.yaml" findings list --project testproj --open
+otis --client-config "$DEMO/client.yaml" findings list --project testproj --open
 cat "$DEMO/.state/projects/testproj/backlog.md"
 ```
 
@@ -73,8 +80,8 @@ testproj/vocabulary-sweep/0001 high open view vocabulary drifts from lens conven
 Accept it through the CLI:
 
 ```bash
-go run ./cmd/otis --client-config "$DEMO/client.yaml" accept testproj/vocabulary-sweep/0001 --note "accepted demo finding"
-go run ./cmd/otis --client-config "$DEMO/client.yaml" findings list --project testproj --open
+otis --client-config "$DEMO/client.yaml" accept testproj/vocabulary-sweep/0001 --note "accepted demo finding"
+otis --client-config "$DEMO/client.yaml" findings list --project testproj --open
 ```
 
 The open list should now print `no findings`. To simulate the reviewer honoring
@@ -83,9 +90,9 @@ force the pass again:
 
 ```bash
 printf '{"findings":[]}\n' > "$DEMO/dummy-output.json"
-go run ./cmd/otis --client-config "$DEMO/client.yaml" pass run testproj/vocabulary-sweep
+otis --client-config "$DEMO/client.yaml" pass run testproj/vocabulary-sweep
 sleep 2
-go run ./cmd/otis --client-config "$DEMO/client.yaml" findings list --project testproj --open
+otis --client-config "$DEMO/client.yaml" findings list --project testproj --open
 PROMPT=$(find "$DEMO/.state/projects/testproj/runs" -name prompt.md | sort | tail -1)
 grep -n "accepted demo finding" "$PROMPT"
 ```
@@ -96,12 +103,12 @@ in prior context, while the open findings list stayed empty.
 ## Useful Commands
 
 ```bash
-go run ./cmd/otis version
-go run ./cmd/otis config check docs/example/global.yaml
-go run ./cmd/otis bok list --bok-path docs/example/bok
-go run ./cmd/otis bok resolve --bok-path docs/example/bok --include vocabulary/,layering/,cognitive-load/ --project testproj
-go run ./cmd/otis --client-config "$DEMO/client.yaml" projects list
-go run ./cmd/otis --client-config "$DEMO/client.yaml" passes list --project testproj
+otis version
+otis config check docs/example/global.yaml
+otis bok list --bok-path docs/example/bok
+otis bok resolve --bok-path docs/example/bok --include vocabulary/,layering/,cognitive-load/ --project testproj
+otis --client-config "$DEMO/client.yaml" projects list
+otis --client-config "$DEMO/client.yaml" passes list --project testproj
 ```
 
 For MCP clients, use [docs/example/mcp.json](docs/example/mcp.json) and point the
