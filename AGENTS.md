@@ -15,6 +15,12 @@ current behavior and operating contracts live in `docs/current/`.
 
 ## Documentation
 
-- `docs/current/` describes implemented behavior and durable operating contracts.
+- `docs/current/` is the docs root for everything currently true about Otis.
+  - `docs/current/guide/` is the user-facing walkthrough (concepts, quickstart,
+    BoK, configuration, reviewers, deployment, day-to-day operation).
+  - The sibling notes (`configuration.md`, `operations.md`, `api.md`,
+    `invariants.md`, `deferred.md`, `harvest-agent-guide.md`) are the
+    reference layer; keep guide prose and reference contracts in sync.
+- `docs/future/` is reserved for specs and work orders describing future states.
 - `docs/example/` contains the runnable demo BoK, project, and config.
-- Keep `README.md` concise and point to current docs and the demo.
+- Keep `README.md` concise and point to `docs/current/guide/` and the demo.
